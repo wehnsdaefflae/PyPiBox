@@ -1,244 +1,310 @@
+from __future__ import annotations
+
 import json
+import os
+
 import time
 
 import dropbox
 from dropbox import files as db_files
 from dropbox import exceptions as db_exceptions
-from dropbox.files import RelocationPath
+from dropbox.files import RelocationPath, ListFolderResult, DeleteArg, ListRevisionsResult
 from pathlib import Path
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileSystemEvent, FileSystemMovedEvent
+
+from fsTools import DirectoryWatcher
+from utils import local_ts_to_dt, utc_ts_to_dt, convert_remote_entry, path_local_to_remote, path_remote_to_local, \
+    FileInfo
+from windy_hasher import compute_dropbox_hash
 
 
-class DirectoryWatcher(FileSystemEventHandler):
-    def __init__(self, upload: set[Path], delete: set[Path], move: set[tuple[Path, Path]], *args, **kwargs):
-        self.upload = upload
-        self.delete = delete
-        self.move = move
-        self.ignore = set()
-        super().__init__(*args, **kwargs)
+def get_all_local_files(folder_path: Path) -> dict[Path, FileInfo]:
+    entries = dict()
+    for each_path in folder_path.glob("**/*"):
+        if each_path.is_dir():
+            continue
+        stat = each_path.stat()
+        local_datetime = local_ts_to_dt(stat.st_mtime)
+        db_hash = compute_dropbox_hash(each_path)
+        entries[each_path] = FileInfo(each_path,  local_datetime, db_hash)
 
-    def on_modified(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        file_path = event.src_path
-        if file_path in self.ignore:
-            return
-        print(f"File locally modified: {file_path:s}")
-        self.upload.add(Path(file_path))
-        self.ignore.clear()
-
-    def on_created(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        file_path = event.src_path
-        if file_path in self.ignore:
-            return
-        print(f"File locally created: {event.src_path:s}")
-        self.upload.add(Path(file_path))
-        self.ignore.clear()
-
-    def on_deleted(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        file_path = event.src_path
-        if file_path in self.ignore:
-            return
-        print(f"File locally deleted: {file_path:s}")
-        self.delete.add(Path(file_path))
-        self.ignore.clear()
-
-    def on_moved(self, event: FileSystemMovedEvent) -> None:
-        src_path = event.src_path
-        if src_path in self.ignore:
-            return
-
-        dest_path = event.dest_path
-        if dest_path in self.ignore:
-            return
-
-        print(f"File locally moved from {src_path:s} to {dest_path:s}")
-        self.move.add((event.src_path, event.dest_path))
-        self.ignore.clear()
+    return entries
 
 
-def get_all_local_entries(folder_path: Path) -> list[Path]:
-    return list(folder_path.glob("**/*"))
+def get_remote_files(client: dropbox.Dropbox, result: ListFolderResult, only_deleted: bool = False) -> tuple[dict[Path, FileInfo], CURSOR]:
+    remote_files = dict()
+    remote_files_deleted = dict()
+
+    while True:
+        for each_entry in result.entries:
+            is_file = isinstance(each_entry, db_files.FileMetadata)
+            is_deleted = isinstance(each_entry, db_files.DeletedMetadata)
+            if not is_file and not is_deleted:
+                continue
+
+            each_file = convert_remote_entry(each_entry)
+            if is_file:
+                remote_files[each_file.path] = each_file
+            elif only_deleted and is_deleted:
+                remote_files_deleted[each_file.path] = each_file
+
+        if not result.has_more:
+            break
+        result = client.files_list_folder_continue(result.cursor)
+
+    if only_deleted:
+        for each_path in remote_files:
+            remote_files_deleted.pop(each_path, None)
+
+        return remote_files_deleted, result.cursor
+
+    return remote_files, result.cursor
+
+
+def get_all_remote_files(client: dropbox.Dropbox, dropbox_folder: Path, only_deleted: bool = False) -> tuple[dict[Path, FileInfo], CURSOR]:
+    dropbox_path = dropbox_folder.as_posix()
+    if dropbox_path == "/":
+        dropbox_path = ""
+
+    result = client.files_list_folder(dropbox_path, recursive=True, include_deleted=only_deleted)
+    return get_remote_files(client, result, only_deleted=only_deleted)
+
+
+def delta_transfers(src_files: dict[Path, FileInfo], dst_files: dict[Path, FileInfo]) -> dict[Path, FileInfo]:
+    delta = dict()
+    for each_path, each_file in src_files.items():
+        dst_file = dst_files.get(each_path, None)
+        if dst_file is None or (dst_file.hash != each_file.hash and dst_file.time < each_file.time):
+            delta[each_path] = each_file
+
+    return delta
 
 
 CURSOR = str
 
 
-def get_all_remote_entries(client: dropbox.Dropbox, path: Path) -> tuple[list[db_files.Metadata], CURSOR]:
-    print(f"Getting all entries for {path.as_posix():s}...")
-    dropbox_path = path.as_posix()
-    if dropbox_path == "/":
-        dropbox_path = ""
-
-    result = client.files_list_folder(dropbox_path, recursive=True)
-    entries = list(result.entries)
-
-    while result.has_more:
-        print(f"Found {len(entries):d} entries...")
-        result = client.files_list_folder_continue(result.cursor)
-        entries.extend(result.entries)
-
-    return entries, result.cursor
-
-
-def get_updated_remote_entries(client: dropbox.Dropbox, cursor: CURSOR) -> tuple[list[db_files.Metadata], CURSOR]:
-    print("Getting updated entries...")
+def remote_changes(client: dropbox.Dropbox, cursor: CURSOR) -> tuple[dict[Path, FileInfo], CURSOR]:
     result = client.files_list_folder_continue(cursor)
-    entries = [each_entry for each_entry in result.entries if isinstance(each_entry, db_files.FileMetadata)]
-
-    while result.has_more:
-        print(f"Found {len(entries):d} updated entries...")
-        result = client.files_list_folder_continue(result.cursor)
-        for each_entry in result.entries:
-            if isinstance(each_entry, db_files.FileMetadata):
-                entries.append(each_entry)
-
-    return entries, result.cursor
+    return get_remote_files(client, result)
 
 
-def apply_changes_locally(client: dropbox.Dropbox, dw: DirectoryWatcher, entries: list[db_files.Metadata], local_folder: Path) -> None:
-    if len(entries) < 1:
+def download_changes(client: dropbox.Dropbox, dw: DirectoryWatcher, remote_files: dict[Path, FileInfo], dropbox_folder: Path, local_folder: Path) -> None:
+    if len(remote_files) < 1:
         return
 
-    for each_entry in entries:
-        if isinstance(each_entry, db_files.FileMetadata):
-            entry_path = Path(each_entry.path_display)
-            local_path = local_folder / entry_path.relative_to("/")
+    total = len(remote_files)
+    remote_files_copy = remote_files.copy()
+    for i, (each_path, each_file) in enumerate(remote_files_copy.items()):
+        local_path = path_remote_to_local(each_path, local_folder, dropbox_folder)
 
-            remote_mtime = each_entry.server_modified.timestamp()
-
-            if local_path.exists():
+        if local_path.exists():
+            try:
                 lstat = local_path.lstat()
-                local_mtime = lstat.st_mtime
+                local_dt = local_ts_to_dt(lstat.st_mtime)
+                if each_file.hash == compute_dropbox_hash(local_path) or each_file.time < local_dt:
+                    continue  # Local file is more recent or identical, skip download, might be uploaded later
 
-                if local_mtime > remote_mtime:
-                    continue  # Local file is more recent, skip download, will be uploaded later
+            except OSError as e:
+                print(f"File {local_path.as_posix():s} is not accessible, skipping download")
+                continue
 
-            elif not local_path.parent.exists():
-                print(f"Creating folder {local_path.parent.as_posix():s}")
-                local_path.parent.mkdir(parents=True)
+        elif not local_path.parent.exists():
+            print(f"Creating folder {local_path.parent.as_posix():s}")
+            local_path.parent.mkdir(parents=True)
 
-            print(f"Downloading {each_entry.path_display:s}")
-            file_path = local_path.as_posix()
-            dw.ignore.add(file_path)
-            client.files_download_to_file(local_path.as_posix(), each_entry.path_display)
+        print(f"Downloading {i+1:d}/{total:d} {each_path.as_posix():s}")
+
+        file_path = local_path.as_posix()
+        dw.ignore.add(file_path)
+        client.files_download_to_file(local_path.as_posix(), each_path.as_posix())
+        dw.ignore.remove(file_path)
 
 
-def change_files_remotely(client: dropbox.Dropbox, local_files: set[Path], configuration: dict[str, str]) -> None:
+def upload_changes(client: dropbox.Dropbox, local_files: dict[Path, FileInfo], dropbox_folder: Path, local_folder: Path) -> None:
     if len(local_files) < 1:
         return
 
-    dropbox_folder = Path(configuration["dropbox_folder"])
-    local_folder = Path(configuration["local_folder"])
-
-    for local_path in local_files:
-        relative_path = local_path.relative_to(local_folder)
-        dropbox_path = dropbox_folder / relative_path
+    total = len(local_files)
+    local_files_copy = local_files.copy()
+    for i, (local_path, local_file) in enumerate(local_files_copy.items()):
+        remote_path = path_local_to_remote(local_path, local_folder, dropbox_folder)
 
         try:
-            remote_entry = client.files_get_metadata(dropbox_path.as_posix())
+            remote_entry = client.files_get_metadata(remote_path.as_posix())
             if isinstance(remote_entry, db_files.FileMetadata):
-                remote_mtime = remote_entry.server_modified.timestamp()
-                lstat = local_path.lstat()
-                local_mtime = lstat.st_mtime
+                remote_ts = remote_entry.server_modified.timestamp()
+                remote_dt = utc_ts_to_dt(remote_ts)
 
-                if remote_mtime >= local_mtime:
-                    continue  # Remote file is more recent or same, skip upload
-
-            with local_path.open(mode='rb') as f:
-                print(f"Uploading {relative_path.as_posix():s}")
-                client.files_upload(f.read(), dropbox_path.as_posix(), mode=db_files.WriteMode('overwrite'))
+                if remote_entry.content_hash == local_file.hash or remote_dt >= local_file.time:
+                    continue  # Remote file is identical, more recent, or same, skip upload
 
         except db_exceptions.ApiError as e:
-            if e.error.is_path() and e.error.get_path().is_conflict():
-                print(f"Conflict detected: {relative_path.as_posix():s}")
-                continue
+            if not (e.error.is_path() and e.error.get_path().is_not_found()):
+                # File exists, but error
+                raise e
 
-            elif not (e.error.is_path() and e.error.get_path().is_not_found()):
-                raise
+        try:
+            with local_path.open(mode='rb') as f:
+                print(f"Uploading {i + 1:d}/{total:d} {local_path.as_posix():s}")
+                client.files_upload(f.read(), remote_path.as_posix(), mode=db_files.WriteMode('overwrite'))
+
+        except FileNotFoundError:
+            print(f"File {local_path.as_posix():s} not found, skipping")
 
     local_files.clear()
 
 
-def delete_files_remotely(client: dropbox.Dropbox, deleted_files: set[Path], configuration: dict[str, str]) -> None:
-    if len(deleted_files) < 1:
+def process_remote_file_deletions(client: dropbox.Dropbox, local_files: set[FileInfo], local_folder: Path, dropbox_folder: Path) -> None:
+    if len(local_files) < 1:
         return
 
-    dropbox_folder = Path(configuration["dropbox_folder"])
-    local_folder = Path(configuration["local_folder"])
+    print(f"Deleting {len(local_files):d} files")
+    remote_files = [
+        path_local_to_remote(each_file.path, local_folder, dropbox_folder)
+        for each_file in local_files
+    ]
 
-    print(f"Deleting {len(deleted_files):d} files")
-    remote_files = [dropbox_folder / each_file.relative_to(local_folder) for each_file in deleted_files]
-    client.files_delete_batch(remote_files)
-
-    deleted_files.clear()
+    client.files_delete_batch([DeleteArg(each_file.as_posix()) for each_file in remote_files])
+    local_files.clear()
 
 
-def move_files_remotely(client: dropbox.Dropbox, moved_files: set[RelocationPath], configuration: dict[str, str]) -> None:
-    if len(moved_files) < 1:
+def move_files_remotely(client: dropbox.Dropbox, remote_relocation_paths: set[RelocationPath]) -> None:
+    if len(remote_relocation_paths) < 1:
         return
 
-    dropbox_folder = Path(configuration["dropbox_folder"])
-    local_folder = Path(configuration["local_folder"])
+    print(f"Moving {len(remote_relocation_paths):d} files")
+    client.files_move_batch_v2(remote_relocation_paths)
 
-    print(f"Moving {len(moved_files):d} files")
-    relocation_paths = [
+
+def process_relocations(locally_moved_files: dict[tuple[Path, Path], FileInfo], local_folder: Path, dropbox_folder: Path) -> set[RelocationPath]:
+    relocation_paths = {
         RelocationPath(
-            from_path=dropbox_folder / src_path.relative_to(local_folder),
-            to_path=dropbox_folder / dst_path.relative_to(local_folder)
+            from_path=path_local_to_remote(src_path, local_folder, dropbox_folder),
+            to_path=path_local_to_remote(dst_path, local_folder, dropbox_folder)
         )
-        for src_path, dst_path in moved_files]
-    client.files_move_batch_v2(relocation_paths)
+        for (src_path, dst_path), dst_file_info in locally_moved_files.items()}
+    locally_moved_files.clear()
+    return relocation_paths
 
-    moved_files.clear()
+
+def get_remotely_deleted_files(client: dropbox.Dropbox, local_folder: Path, dropbox_folder: Path) -> dict[Path, FileInfo]:
+    complete_remote_files_absolute, _ = get_all_remote_files(client, dropbox_folder, only_deleted=True)
+
+    to_delete = dict()
+    for each_path, each_file in complete_remote_files_absolute.items():
+        list_revisions_result: ListRevisionsResult = client.files_list_revisions(path=each_path.as_posix(), limit=1)
+        last_revision, = list_revisions_result.entries
+        if not isinstance(last_revision, db_files.FileMetadata):
+            continue
+
+        remote_dt = utc_ts_to_dt(last_revision.server_modified.timestamp())
+
+        local_path = path_remote_to_local(each_path, local_folder, dropbox_folder)
+        if not local_path.is_file():
+            continue
+
+        stat = local_path.stat()
+        local_dt = local_ts_to_dt(stat.st_mtime)
+        if each_file.is_deleted and local_path.is_file() and local_dt < remote_dt:
+            to_delete[local_path] = each_file
+
+    return to_delete
 
 
-if __name__ == '__main__':
+def delete_local_files(files: dict[Path, FileInfo], local_folder: Path) -> None:
+    if len(files) < 1:
+        return
+
+    for each_path, _ in files.items():
+        each_path.unlink(missing_ok=True)
+        parent_path = each_path.parent
+        if parent_path.is_dir() and parent_path != local_folder and len(os.listdir(parent_path.as_posix())) < 1:
+            parent_path.rmdir()
+
+
+def main() -> None:
+    # todo: doesnt sync remote deletions
+
     with open("resources/config.json", mode="r") as file:
         config = json.load(file)
 
     dropbox_client = dropbox.Dropbox(config.pop("access_token"))
 
-    locally_modified = set()
-    locally_deleted = set()
-    locally_moved = set()
-
     print("Starting Dropbox sync client...")
-    Path(config["local_folder"]).mkdir(parents=True, exist_ok=False)
+    local_folder = Path(config["local_folder"])
+    local_folder.mkdir(parents=True, exist_ok=True)
 
-    event_handler = DirectoryWatcher(locally_modified, locally_deleted, locally_moved)
+    dropbox_folder = Path(config["dropbox_folder"])
+    try:
+        dropbox_client.files_get_metadata(dropbox_folder.as_posix())
+    except db_exceptions.ApiError as e:
+        if e.error.is_path() and e.error.get_path().is_not_found():
+            dropbox_client.files_create_folder_v2(dropbox_folder.as_posix())
+
+    local_files_absolute = get_all_local_files(local_folder)
+    print(f"Found {len(local_files_absolute):d} local files")
+    local_files_relative = {
+        each_path.relative_to(local_folder): each_time
+        for each_path, each_time in local_files_absolute.items()}
+    remote_files_absolute, main_cursor = get_all_remote_files(dropbox_client, dropbox_folder)
+    print(f"Found {len(remote_files_absolute):d} remote files")
+    remote_files_relative = {
+        each_path.relative_to(dropbox_folder): each_time
+        for each_path, each_time in remote_files_absolute.items()}
+
+    locally_deleted_files = set()
+    locally_moved_files = dict()
+    locally_modified_files = dict()
+
+    directory_watcher = DirectoryWatcher(locally_modified_files, locally_deleted_files, locally_moved_files)
     observer = Observer()
-    observer.schedule(event_handler, config["local_folder"], recursive=True)
+    observer.schedule(directory_watcher, local_folder.as_posix(), recursive=True)
 
-    remote_entries, main_cursor = get_all_remote_entries(dropbox_client, Path(config["dropbox_folder"]))
-    apply_changes_locally(dropbox_client, event_handler, remote_entries, Path(config["local_folder"]))
+    uploads_relative = delta_transfers(local_files_relative, remote_files_relative)
+    uploads = {local_folder / each_path: each_time for each_path, each_time in uploads_relative.items()}
+    upload_changes(dropbox_client, uploads, dropbox_folder, local_folder)
 
-    # todo: determine initial delta
+    downloads_relative = delta_transfers(remote_files_relative, local_files_relative)
+    downloads = {dropbox_folder / each_path: each_time for each_path, each_time in downloads_relative.items()}
+    download_changes(dropbox_client, directory_watcher, downloads, dropbox_folder, local_folder)
 
+    print("Starting directory watcher...")
     observer.start()
     try:
         while True:
-            delete_files_remotely(dropbox_client, locally_deleted, config)
-            move_files_remotely(dropbox_client, locally_moved, config)
-            change_files_remotely(dropbox_client, locally_modified, config)
+            print("Syncing remote...")
+            # delete remotely
+            process_remote_file_deletions(dropbox_client, locally_deleted_files, local_folder, dropbox_folder)
 
-            time.sleep(10)
+            # move remotely
+            relocation_paths = process_relocations(locally_moved_files, local_folder, dropbox_folder)
+            move_files_remotely(dropbox_client, relocation_paths)
 
-            remote_entries, main_cursor = get_updated_remote_entries(dropbox_client, main_cursor)
-            print(f"Updated remote {len(remote_entries):d} entries:")
-            for _entry in remote_entries:
-                print(f"  {_entry.path_display:s}")
+            # upload remotely
+            upload_changes(dropbox_client, locally_modified_files, dropbox_folder, local_folder)
 
-            apply_changes_locally(dropbox_client, event_handler, remote_entries, Path(config["local_folder"]))
+            print("Sleeping...")
+            time.sleep(5)
+
+            print("Syncing local...")
+            # download
+            remote_files_absolute, main_cursor = remote_changes(dropbox_client, main_cursor)
+            # print(f"Updated remote {len(remote_files_absolute):d} entries:")
+            download_changes(dropbox_client, directory_watcher, remote_files_absolute, dropbox_folder, local_folder)
+
+            # delete
+            remotely_deleted = get_remotely_deleted_files(dropbox_client, local_folder, dropbox_folder)
+            delete_local_files(remotely_deleted, local_folder)
+
+            # todo: remotely deleted files not synced locally. remotely moved files?
 
     except KeyboardInterrupt:
         observer.stop()
         print("Sync client stopped.")
 
     observer.join()
+
+
+if __name__ == '__main__':
+    main()
