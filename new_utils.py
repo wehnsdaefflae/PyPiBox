@@ -20,13 +20,18 @@ class PathInfo:
     def is_folder(self) -> bool:
         return self.path.endswith("/")
 
+    @property
+    def is_deleted(self) -> bool:
+        return self.hash is None and not self.is_folder
+
     def __eq__(self, other: PathInfo) -> bool:
         if not isinstance(other, PathInfo):
             return False
-        return self.path == other.path and self.timestamp == other.timestamp and self.hash == other.hash
+
+        return self.path == other.path and self.hash == other.hash
 
     def __hash__(self) -> int:
-        return hash((self.path, self.hash, self.timestamp))
+        return hash((self.path, self.hash))
 
 
 def compute_dropbox_hash(path: str) -> str:
@@ -43,7 +48,7 @@ def compute_dropbox_hash(path: str) -> str:
     return total_hash.hexdigest()
 
 
-def get_modification_timestamp_locally(file_path: str) -> float:
+def get_mod_time_locally(file_path: str) -> float:
     stat = os.stat(file_path)
     timestamp = stat.st_mtime
     dt_local = datetime.datetime.fromtimestamp(timestamp, tz=tz.tzlocal())
@@ -51,7 +56,7 @@ def get_modification_timestamp_locally(file_path: str) -> float:
     return round(dt.timestamp(), 1)
 
 
-def get_modification_timestamp_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]) -> float:
+def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]) -> float:
     stat = entry.server_modified
     return stat.timestamp()
 
