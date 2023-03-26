@@ -18,7 +18,7 @@ class PathInfo:
 
     @property
     def is_folder(self) -> bool:
-        return self.hash is None
+        return self.path.endswith("/")
 
     def __eq__(self, other: PathInfo) -> bool:
         if not isinstance(other, PathInfo):
@@ -27,9 +27,6 @@ class PathInfo:
 
     def __hash__(self) -> int:
         return hash((self.path, self.hash, self.timestamp))
-
-
-FILE_LIST = list[dict[str, Union[str, float]]]
 
 
 def compute_dropbox_hash(path: str) -> str:
@@ -51,7 +48,7 @@ def get_modification_timestamp_locally(file_path: str) -> float:
     timestamp = stat.st_mtime
     dt_local = datetime.datetime.fromtimestamp(timestamp, tz=tz.tzlocal())
     dt = dt_local.astimezone(tz=tz.tzutc())
-    return dt.timestamp()
+    return round(dt.timestamp(), 1)
 
 
 def get_modification_timestamp_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]) -> float:
