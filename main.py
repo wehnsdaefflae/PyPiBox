@@ -102,7 +102,7 @@ def download_changes(client: dropbox.Dropbox, dw: DirectoryWatcher, remote_files
             try:
                 lstat = local_path.lstat()
                 local_dt = local_ts_to_dt(lstat.st_mtime)
-                if each_file.hash == compute_dropbox_hash(local_path) or each_file.time < local_dt:
+                if each_file.hash == compute_dropbox_hash(local_path) or each_file.timestamp < local_dt:
                     continue  # Local file is more recent or identical, skip download, might be uploaded later
 
             except OSError as e:
@@ -136,7 +136,7 @@ def upload_changes(client: dropbox.Dropbox, local_files: dict[Path, FileInfo], d
                 remote_ts = remote_entry.server_modified.timestamp()
                 remote_dt = utc_ts_to_dt(remote_ts)
 
-                if remote_entry.content_hash == local_file.hash or remote_dt >= local_file.time:
+                if remote_entry.content_hash == local_file.hash or remote_dt >= local_file.timestamp:
                     continue  # Remote file is identical, more recent, or same, skip upload
 
         except db_exceptions.ApiError as e:
