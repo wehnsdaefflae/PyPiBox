@@ -26,6 +26,12 @@ class FileInfo:
     hash: Optional[str]
 
     @property
+    def path_no_tail_slash(self) -> str:
+        if self.path.endswith("/"):
+            return self.path[:-1]
+        return self.path
+
+    @property
     def is_folder(self) -> bool:
         return self.path.endswith("/")
 

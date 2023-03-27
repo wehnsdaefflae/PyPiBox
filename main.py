@@ -94,7 +94,8 @@ class DropboxSync:
             return
         logging.info(f"Uploading {len_paths:d} files")
 
-        for each_path, each_file in file_index.items():
+        for each_path_tail_slash, each_file in file_index.items():
+            each_path = each_file.path_no_tail_slash
             dst_path = self.dropbox_folder + each_path
             remote_file = self._get_remote_file(each_path)
 
@@ -117,6 +118,7 @@ class DropboxSync:
             src_path = self.local_folder + each_file.path
             with open(src_path, mode="rb") as file:
                 self.client.files_upload(file.read(), dst_path, mode=db_files.WriteMode("overwrite"))
+                # self.client.files_upload_session_start()
 
     def _method_download(self: DropboxSync, file_index: FILE_INDEX) -> None:
         len_paths = len(file_index)
@@ -163,7 +165,7 @@ class DropboxSync:
             if not each_file.is_folder]
         self.client.files_delete_batch(file_entries)
 
-        folders = [each_path for each_path, each_file in file_index.items() if each_file.is_folder]
+        folders = [each_file.path_no_tail_slash for _, each_file in file_index.items() if each_file.is_folder]
         folders.sort(key=depth, reverse=True)
         folder_entries = [DeleteArg(self.dropbox_folder + each_path) for each_path in folders]
         self.client.files_delete_batch(folder_entries)
@@ -287,16 +289,31 @@ class DropboxSync:
         action_cache = dict()
         for each_path, src_file in index_src.items():
             dst_file = index_dst.get(each_path)
-            if dst_file is not None:
+            if dst_file is None:
+                if method == SyncAction.ADD:
+                    action_cache[each_path] = src_file
+
+                elif method == SyncAction.DEL:
+                    continue
+
+            elif method == SyncAction.ADD:
                 if dst_file.hash == src_file.hash:
                     continue
 
-                if dst_file.timestamp >= src_file.timestamp:
-                    logging.warning(
-                        f"Conflict {method:s} {each_path:s} {direction:s}: source is older than destination.")
+                elif dst_file.timestamp < src_file.timestamp:
+                    action_cache[each_path] = src_file
+
+                else:
+                    logging.warning(f"Conflict {method:s} {each_path:s} {direction:s}: source is older than target.")
                     continue
 
-            action_cache[each_path] = src_file
+            elif method == SyncAction.DEL:
+                if dst_file.hash == src_file.hash:
+                    action_cache[each_path] = src_file
+
+                else:
+                    logging.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target.")
+                    continue
 
         action(action_cache)
         return action_cache
@@ -317,6 +334,7 @@ class DropboxSync:
 
         local_delta, remote_delta = self._get_deltas(local_index, remote_index)
 
+        # modifying works, creating works, deletion does not
         self.uploaded = self._sync_action(local_delta.modified, remote_index, SyncAction.ADD, SyncDirection.UP)
         self.deleted_remotely = self._sync_action(local_delta.deleted, remote_index, SyncAction.DEL, SyncDirection.UP)
         self.downloaded = self._sync_action(remote_delta.modified, local_index, SyncAction.ADD, SyncDirection.DOWN)
