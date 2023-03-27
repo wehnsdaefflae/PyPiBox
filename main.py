@@ -41,6 +41,7 @@ class DropboxSync:
 
             print("Authentication complete. Access token has been saved to config file.")
 
+        self.interval_seconds = config.get("interval_seconds", 60)
         self.local_folder = config["local_folder"]
         assert self.local_folder[-1] == "/"
         os.makedirs(self.local_folder, exist_ok=True)
@@ -363,7 +364,7 @@ def main() -> None:
 
     while True:
         db_sync.sync()
-        time.sleep(5)
+        time.sleep(db_sync.interval_seconds)
 
 
 if __name__ == "__main__":
