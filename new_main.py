@@ -10,7 +10,10 @@ from dropbox.files import DeleteArg
 
 import logging
 
-from new_utils import PathInfo, compute_dropbox_hash, get_mod_time_locally, get_mod_time_remotely, depth
+from new_utils import FileInfo, FILE_INDEX, compute_dropbox_hash, get_mod_time_locally, get_mod_time_remotely, depth, \
+    Delta
+
+from new_utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
@@ -32,35 +35,35 @@ class DropboxSync:
         self.log_file = os.path.join("events.log")
         logging.basicConfig(filename=self.log_file, level=logging.INFO)
 
-        self.upload_files, self.download_files = set(), set()
-        self.delete_remotely, self.delete_locally = set(), set()
+        self.uploaded, self.downloaded = dict(), dict()
+        self.deleted_remotely, self.deleted_locally = dict(), dict()
 
-        self.last_local_index = set()
-        self.last_remote_index = set()
+        self.last_local_index = dict()
+        self.last_remote_index = dict()
 
-    def get_local_index(self: DropboxSync) -> set[PathInfo]:
-        print("Getting local index...")
-        local_file_index = set()
+    def _get_local_index(self: DropboxSync) -> FILE_INDEX:
+        logging.info("Getting local index...")
+        local_file_index = dict()
         length = len(self.local_folder)
         for root, dirs, file_paths in os.walk(self.local_folder):
             for each_path in file_paths:
                 full_path = os.path.join(root, each_path)
                 mod_dt = get_mod_time_locally(full_path)
                 db_hash = compute_dropbox_hash(full_path)
-                each_file = PathInfo(full_path[length:], mod_dt, db_hash)
-                local_file_index.add(each_file)
+                each_file = FileInfo(full_path[length:], mod_dt, db_hash)
+                local_file_index[each_file.path] = each_file
 
             for each_path in dirs:
                 full_path = os.path.join(root, each_path)
                 mod_dt = get_mod_time_locally(full_path)
-                each_dir = PathInfo(f"{full_path[length:]:s}/", mod_dt, None)
-                local_file_index.add(each_dir)
+                each_dir = FileInfo(f"{full_path[length:]:s}/", mod_dt, None)
+                local_file_index[each_dir.path] = each_dir
 
         return local_file_index
 
-    def get_remote_index(self: DropboxSync) -> set[PathInfo]:
-        print("Getting remote index...")
-        contents = set()
+    def _get_remote_index(self: DropboxSync) -> FILE_INDEX:
+        logging.info("Getting remote index...")
+        remote_index = dict()
         length = len(self.dropbox_folder)
         result = self.client.files_list_folder(self.dropbox_folder, recursive=True)
 
@@ -69,118 +72,127 @@ class DropboxSync:
                 if isinstance(entry, db_files.FileMetadata):
                     mod_dt = get_mod_time_remotely(entry)
                     db_hash = entry.content_hash
-                    each_file = PathInfo(entry.path_display[length:], mod_dt, db_hash)
-                    contents.add(each_file)
+                    each_file = FileInfo(entry.path_display[length:], mod_dt, db_hash)
+                    remote_index[each_file.path] = each_file
 
                 elif isinstance(entry, db_files.FolderMetadata):
                     truncated = entry.path_display[length:]
                     if 0 < len(truncated):
-                        each_dir = PathInfo(f"{truncated:s}/", -1., None)
-                        contents.add(each_dir)
+                        each_dir = FileInfo(f"{truncated:s}/", -1., None)
+                        remote_index[each_dir.path] = each_dir
 
             if not result.has_more:
                 break
 
             result = self.client.files_list_folder_continue(result.cursor)
 
-        return contents
+        return remote_index
 
-    def upload(self: DropboxSync, paths: set[PathInfo]) -> None:
-        len_paths = len(paths)
+    def _method_upload(self: DropboxSync, file_index: FILE_INDEX) -> None:
+        len_paths = len(file_index)
         if len_paths < 1:
             return
-        print(f"Uploading {len_paths:d} files")
+        logging.info(f"Uploading {len_paths:d} files")
 
-        for each_path in paths:
-            dst_path = self.dropbox_folder + each_path.path
-            remote_path = self.get_remote_path(each_path.path)
+        for each_path, each_file in file_index.items():
+            dst_path = self.dropbox_folder + each_path
+            remote_file = self._get_remote_file(each_path)
 
-            if each_path.is_folder:
-                if remote_path is not None and remote_path.is_folder:
+            if each_file.is_folder:
+                if remote_file is not None and remote_file.is_folder:
                     continue
 
                 self.client.files_create_folder_v2(dst_path)
                 continue
 
-            if remote_path is not None and not remote_path.is_folder and not remote_path.is_deleted:
-                if remote_path.hash == each_path.hash or remote_path.timestamp >= each_path.timestamp:
+            # necessary in case of intermediate upload from somewhere else!
+            if remote_file is not None and not remote_file.is_folder and not remote_file.is_deleted:
+                if remote_file.hash == each_file.hash:
                     continue
 
-            src_path = self.local_folder + each_path.path
+                if remote_file.timestamp >= each_file.timestamp:
+                    logging.warning(f"Conflict: More recent remote file {each_path:s}. Skipping...")
+                    continue
+
+            src_path = self.local_folder + each_file.path
             with open(src_path, mode="rb") as file:
                 self.client.files_upload(file.read(), dst_path, mode=db_files.WriteMode("overwrite"))
 
-    def download(self: DropboxSync, paths: set[PathInfo]) -> None:
-        len_paths = len(paths)
-        if len(paths) < 1:
+    def _method_download(self: DropboxSync, file_index: FILE_INDEX) -> None:
+        len_paths = len(file_index)
+        if len(file_index) < 1:
             return
-        print(f"Downloading {len_paths:d} files")
+        logging.info(f"Downloading {len_paths:d} files")
 
-        directories = [each_path for each_path in paths if each_path.is_folder]
+        directories = [each_path for each_path, each_file in file_index.items() if each_file.is_folder]
         directories.sort(key=depth)
-
         for each_path in directories:
-            dst_path = self.local_folder + each_path.path
-            if os.path.exists(dst_path):
+            local_path = self.local_folder + each_path
+            if os.path.exists(local_path):
                 continue
 
-            os.mkdir(dst_path)
+            os.mkdir(local_path)
 
-        files = [each_path for each_path in paths if not each_path.is_folder]
-        for each_path in files:
-            src_path = self.dropbox_folder + each_path.path
-            dst_path = self.local_folder + each_path.path
-            if os.path.exists(dst_path):
-                local_hash = compute_dropbox_hash(dst_path)
-                local_time = get_mod_time_locally(dst_path)
-                if local_hash == each_path.hash or local_time >= each_path.timestamp:
+        for each_path, each_file in file_index.items():
+            if each_file.is_folder:
+                continue
+            remote_path = self.dropbox_folder + each_path
+            local_path = self.local_folder + each_path
+            if os.path.exists(local_path):
+                local_hash = compute_dropbox_hash(local_path)
+                if local_hash == each_file.hash:
                     continue
 
-            self.client.files_download_to_file(dst_path, src_path)
+                local_time = get_mod_time_locally(local_path)
+                if local_time >= each_file.timestamp:
+                    logging.warning(f"Conflict: More recent local file {each_path:s}. Skipping...")
+                    continue
 
-    def delete_remote_files(self: DropboxSync, paths: set[PathInfo]) -> None:
-        len_paths = len(paths)
+            self.client.files_download_to_file(local_path, remote_path)
+            # os.utime(local_path, (each_file.timestamp, each_file.timestamp))
+
+    def _method_delete_remote(self: DropboxSync, file_index: FILE_INDEX) -> None:
+        len_paths = len(file_index)
         if len_paths < 1:
             return
-        print(f"Deleting {len_paths:d} remote files")
+        logging.warning(f"Deleting {len_paths:d} remote files")
 
         file_entries = [
-            DeleteArg(self.dropbox_folder + each_path.path)
-            for each_path in paths
-            if not each_path.is_folder
-        ]
+            DeleteArg(self.dropbox_folder + each_file.path)
+            for each_file in file_index.values()
+            if not each_file.is_folder]
         self.client.files_delete_batch(file_entries)
 
-        folders = [each_path for each_path in paths if each_path.is_folder]
+        folders = [each_path for each_path, each_file in file_index.items() if each_file.is_folder]
         folders.sort(key=depth, reverse=True)
-        folder_entries = [DeleteArg(self.dropbox_folder + each_path.path) for each_path in folders]
+        folder_entries = [DeleteArg(self.dropbox_folder + each_path) for each_path in folders]
         self.client.files_delete_batch(folder_entries)
 
-    def delete_local_files(self: DropboxSync, paths: set[PathInfo]) -> None:
-        len_paths = len(paths)
+    def _method_delete_local(self: DropboxSync, file_index: FILE_INDEX) -> None:
+        len_paths = len(file_index)
         if len_paths < 1:
             return
-        print(f"Deleting {len_paths:d} local files")
+        logging.warning(f"Deleting {len_paths:d} local files")
 
-        for each_path in paths:
-            if not each_path.is_folder:
-                path = self.local_folder + each_path.path
+        for each_path, each_file in file_index.items():
+            if not each_file.is_folder:
+                path = self.local_folder + each_path
                 os.remove(path)
 
-        folders = [every_path for every_path in paths if every_path.is_folder]
+        folders = [each_path for each_path, each_file in file_index.items() if each_file.is_folder]
         folders.sort(key=depth, reverse=True)
         for each_path in folders:
             path = self.local_folder + each_path
             os.rmdir(path)
 
-    def get_remote_path(self, each_path: str) -> Optional[PathInfo]:
+    def _get_remote_file(self, each_path: str) -> Optional[FileInfo]:
         try:
             entry = self.client.files_get_metadata(self.dropbox_folder + each_path)
             if isinstance(entry, db_files.FolderMetadata):
-                return PathInfo(f"{each_path}/", -1., None)
+                return FileInfo(f"{each_path}/", -1., None)
 
             if isinstance(entry, db_files.FileMetadata):
-                return PathInfo(each_path, get_mod_time_remotely(entry), entry.content_hash)
+                return FileInfo(each_path, get_mod_time_remotely(entry), entry.content_hash)
 
         except db_exceptions.ApiError as err:
             if err.error.is_path() and err.error.get_path().is_not_found():
@@ -188,9 +200,11 @@ class DropboxSync:
             else:
                 raise err
 
-    def get_remote_delta(self: DropboxSync) -> tuple[set[PathInfo], set[PathInfo]]:
-        created = set()
-        removed = set()
+    def __get_remote_delta(self: DropboxSync) -> tuple[FILE_INDEX, FILE_INDEX]:
+        raise Exception("Does not work.")
+
+        created = dict()
+        removed = dict()
 
         result = self.client.files_list_folder_get_latest_cursor(
             self.dropbox_folder, recursive=True, include_deleted=True)
@@ -201,77 +215,123 @@ class DropboxSync:
             for each_entry in result.entries:
                 if isinstance(each_entry, db_files.FolderMetadata):
                     mod_dt = get_mod_time_remotely(each_entry)
-                    each_dir = PathInfo(f"{each_entry.path_display}/", mod_dt, None)
-                    created.add(each_dir)
+                    each_dir = FileInfo(f"{each_entry.path_display}/", mod_dt, None)
+                    created[each_dir.path] = each_dir
 
                 elif isinstance(each_entry, db_files.FileMetadata):
                     mod_dt = get_mod_time_remotely(each_entry)
                     db_hash = each_entry.content_hash
-                    each_file = PathInfo(each_entry.path_display, mod_dt, db_hash)
-                    created.add(each_file)
+                    each_file = FileInfo(each_entry.path_display, mod_dt, db_hash)
+                    created[each_file.path] = each_file
 
                 elif isinstance(each_entry, db_files.DeletedMetadata):
-                    each_path = PathInfo(each_entry.path_display, -1., None)
-                    removed.add(each_path)
+                    each_path = FileInfo(each_entry.path_display, -1., None)
+                    removed[each_path.path] = each_path
 
             if not result.has_more:
                 break
 
         return created, removed
 
+    @staticmethod
+    def _different_hash(file: FileInfo, last_index: FILE_INDEX) -> bool:
+        file_info = last_index.get(file.path)
+        if file_info is None:
+            return True
+        return file.hash != file_info.hash  # or file.timestamp != last_index[file.path].timestamp
+
+    def _get_deltas(self, local_index: FILE_INDEX, remote_index: FILE_INDEX) -> tuple[Delta, Delta]:
+        locally_modified = {
+            each_path: each_file
+            for each_path, each_file in local_index.items()
+            if (DropboxSync._different_hash(each_file, self.last_local_index) and each_path not in self.downloaded)}
+
+        remotely_modified = {
+            each_path: each_file
+            for each_path, each_file in remote_index.items()
+            if (DropboxSync._different_hash(each_file, self.last_remote_index) and each_path not in self.uploaded)}
+
+        locally_removed = {
+            each_path: each_file
+            for each_path, each_file in self.last_local_index.items()
+            if each_path not in local_index and each_path not in self.deleted_locally}
+
+        remotely_removed = {
+            each_path: each_file
+            for each_path, each_file in self.last_remote_index.items()
+            if each_path not in remote_index and each_path not in self.deleted_remotely}
+
+        return Delta(locally_modified, locally_removed), Delta(remotely_modified, remotely_removed)
+
+    def _sync_action(self, index_src: FILE_INDEX, index_dst: FILE_INDEX, method: SyncAction,
+                     direction: SyncDirection) -> FILE_INDEX:
+        if direction == SyncDirection.UP:
+            if method == SyncAction.DEL:
+                action = self._method_delete_remote
+            elif method == SyncAction.ADD:
+                action = self._method_upload
+            else:
+                raise Exception("Invalid method")
+
+        elif direction == SyncDirection.DOWN:
+            if method == SyncAction.DEL:
+                action = self._method_delete_local
+            elif method == SyncAction.ADD:
+                action = self._method_download
+            else:
+                raise Exception("Invalid method")
+
+        else:
+            raise Exception("Invalid direction")
+
+        action_cache = dict()
+        for each_path, src_file in index_src.items():
+            dst_file = index_dst.get(each_path)
+            if dst_file is not None:
+                if dst_file.hash == src_file.hash:
+                    continue
+
+                if dst_file.timestamp >= src_file.timestamp:
+                    logging.warning(
+                        f"Conflict {method:s} {each_path:s} {direction:s}: source is older than destination.")
+                    continue
+
+            action_cache[each_path] = src_file
+
+        action(action_cache)
+        return action_cache
+
     def initial_sync(self: DropboxSync) -> None:
-        local_index = self.get_local_index()
-        remote_index = self.get_remote_index()
+        local_index = self._get_local_index()
+        remote_index = self._get_remote_index()
 
-        upload_files = local_index - remote_index
-        download_files = remote_index - local_index
-
-        self.upload(upload_files)
-        self.download(download_files)
+        self.uploaded = self._sync_action(local_index, remote_index, SyncAction.ADD, SyncDirection.UP)
+        self.downloaded = self._sync_action(remote_index, local_index, SyncAction.ADD, SyncDirection.DOWN)
 
         self.last_local_index = local_index
         self.last_remote_index = remote_index
 
     def sync(self: DropboxSync) -> None:
-        local_index = self.get_local_index()
-        remote_index = self.get_remote_index()
+        local_index = self._get_local_index()
+        remote_index = self._get_remote_index()
 
-        locally_added = local_index - self.last_local_index - self.download_files
-        locally_removed = self.last_local_index - local_index - self.delete_locally
-        remotely_added = remote_index - self.last_remote_index - self.upload_files
-        remotely_removed = self.last_remote_index - remote_index - self.delete_remotely
+        local_delta, remote_delta = self._get_deltas(local_index, remote_index)
 
-        self.delete_remotely.clear()
-        self.upload_files.clear()
-        self.delete_locally.clear()
-        self.download_files.clear()
+        self.uploaded = self._sync_action(local_delta.modified, remote_index, SyncAction.ADD, SyncDirection.UP)
+        self.deleted_remotely = self._sync_action(local_delta.deleted, remote_index, SyncAction.DEL, SyncDirection.UP)
+        self.downloaded = self._sync_action(remote_delta.modified, local_index, SyncAction.ADD, SyncDirection.DOWN)
+        self.deleted_locally = self._sync_action(remote_delta.deleted, local_index, SyncAction.DEL, SyncDirection.DOWN)
 
-        for each_path in remote_index | local_index:
-            if each_path in locally_removed and each_path in remote_index:
-                self.delete_remotely.add(each_path)
+        self.last_local_index.clear()
+        self.last_local_index.update(local_index)
 
-            elif each_path in locally_added and each_path not in remote_index:
-                self.upload_files.add(each_path)
-
-            elif each_path in remotely_removed and each_path in local_index:
-                self.delete_locally.add(each_path)
-
-            elif each_path in remotely_added and each_path not in local_index:
-                self.download_files.add(each_path)
-
-        self.delete_remote_files(self.delete_remotely)
-        self.upload(self.upload_files)
-
-        self.delete_local_files(self.delete_locally)
-        self.download(self.download_files)
-
-        self.last_local_index = local_index
-        self.last_remote_index = remote_index
+        self.last_remote_index.clear()
+        self.last_remote_index.update(remote_index)
 
 
 def main() -> None:
     db_sync = DropboxSync("resources/config.json")
-    db_sync.initial_sync()
+    # db_sync.initial_sync()
 
     while True:
         time.sleep(5)

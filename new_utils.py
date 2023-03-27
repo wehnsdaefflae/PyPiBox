@@ -1,17 +1,29 @@
 from __future__ import annotations
 
 import datetime
+import enum
 import hashlib
 import os
 from dataclasses import dataclass
 from typing import Optional, Union
 
+import pytz
 from dateutil import tz
 from dropbox import files
 
 
+class SyncDirection(str, enum.Enum):
+    UP = "up"
+    DOWN = "down"
+
+
+class SyncAction(str, enum.Enum):
+    ADD = "add"
+    DEL = "del"
+
+
 @dataclass
-class PathInfo:
+class FileInfo:
     path: str
     timestamp: float
     hash: Optional[str]
@@ -24,14 +36,23 @@ class PathInfo:
     def is_deleted(self) -> bool:
         return self.hash is None and not self.is_folder
 
-    def __eq__(self, other: PathInfo) -> bool:
-        if not isinstance(other, PathInfo):
+    def __eq__(self, other: FileInfo) -> bool:
+        if not isinstance(other, FileInfo):
             return False
 
         return self.path == other.path and self.hash == other.hash
 
     def __hash__(self) -> int:
         return hash((self.path, self.hash))
+
+
+FILE_INDEX = dict[str, FileInfo]
+
+
+@dataclass
+class Delta:
+    modified: FILE_INDEX
+    deleted: FILE_INDEX
 
 
 def compute_dropbox_hash(path: str) -> str:
@@ -51,15 +72,13 @@ def compute_dropbox_hash(path: str) -> str:
 def get_mod_time_locally(file_path: str) -> float:
     stat = os.stat(file_path)
     timestamp = stat.st_mtime
-    dt_local = datetime.datetime.fromtimestamp(timestamp, tz=tz.tzlocal())
-    dt = dt_local.astimezone(tz=tz.tzutc())
-    return round(dt.timestamp(), 1)
+    return round(timestamp, 1)
 
 
 def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]) -> float:
     stat = entry.server_modified
-    return stat.timestamp()
+    return stat.timestamp() + 2 * 60 * 60
 
 
-def depth(path: PathInfo) -> int:
-    return path.path.count("/")
+def depth(path_str: str) -> int:
+    return path_str.count("/")
