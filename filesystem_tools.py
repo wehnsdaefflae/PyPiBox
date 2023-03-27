@@ -6,8 +6,8 @@ from typing import Callable
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent, FileSystemMovedEvent
 
+from new_utils import compute_dropbox_hash
 from utils import get_mod_time, FileInfo
-from windy_hasher import compute_dropbox_hash
 
 
 class DirectoryWatcher(FileSystemEventHandler):
