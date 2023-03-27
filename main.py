@@ -17,9 +17,29 @@ from new_utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
-    def __init__(self: DropboxSync, config_path: str, debug: bool = True) -> None:
+    def __init__(self: DropboxSync, config_path: str) -> None:
         with open(config_path, mode="r") as file:
             config = json.load(file)
+
+        access_token = config.get("access_token")
+        if access_token is None:
+            authorization_url = dropbox.DropboxOAuth2FlowNoRedirect(
+                config["app_key"], config["app_secret"], token_access_type="legacy").start()
+
+            print(f"1. Go to: {authorization_url:s}")
+            print("2. Click \"Allow\" (you might have to log in first).")
+            print("3. Copy the authorization code.")
+            auth_code = input("Enter the authorization code here: ").strip()
+
+            oauth_result = dropbox.DropboxOAuth2FlowNoRedirect(
+                config["app_key"], config["app_secret"], token_access_type="legacy").finish(auth_code)
+            access_token = oauth_result.access_token
+            config["access_token"] = access_token
+
+            with open(config_path, mode="w") as file:
+                json.dump(config, file, indent=2)
+
+            print("Authentication complete. Access token has been saved to config file.")
 
         self.local_folder = config["local_folder"]
         assert self.local_folder[-1] == "/"
@@ -118,6 +138,7 @@ class DropboxSync:
             src_path = self.local_folder + each_file.path
             with open(src_path, mode="rb") as file:
                 self.client.files_upload(file.read(), dst_path, mode=db_files.WriteMode("overwrite"))
+                # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
                 # self.client.files_upload_session_start()
 
     def _method_download(self: DropboxSync, file_index: FILE_INDEX) -> None:
