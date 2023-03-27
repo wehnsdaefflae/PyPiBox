@@ -10,10 +10,10 @@ from dropbox.files import DeleteArg
 
 import logging
 
-from new_utils import FileInfo, FILE_INDEX, compute_dropbox_hash, get_mod_time_locally, get_mod_time_remotely, depth, \
+from utils import FileInfo, FILE_INDEX, compute_dropbox_hash, get_mod_time_locally, get_mod_time_remotely, depth, \
     Delta
 
-from new_utils import SyncDirection, SyncAction
+from utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
@@ -339,16 +339,6 @@ class DropboxSync:
         action(action_cache)
         return action_cache
 
-    def initial_sync(self: DropboxSync) -> None:
-        local_index = self._get_local_index()
-        remote_index = self._get_remote_index()
-
-        self.uploaded = self._sync_action(local_index, remote_index, SyncAction.ADD, SyncDirection.UP)
-        self.downloaded = self._sync_action(remote_index, local_index, SyncAction.ADD, SyncDirection.DOWN)
-
-        self.last_local_index = local_index
-        self.last_remote_index = remote_index
-
     def sync(self: DropboxSync) -> None:
         local_index = self._get_local_index()
         remote_index = self._get_remote_index()
@@ -369,12 +359,11 @@ class DropboxSync:
 
 
 def main() -> None:
-    db_sync = DropboxSync("resources/config.json")
-    # db_sync.initial_sync()
+    db_sync = DropboxSync("config.json")
 
     while True:
-        time.sleep(5)
         db_sync.sync()
+        time.sleep(5)
 
 
 if __name__ == "__main__":
