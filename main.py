@@ -21,23 +21,21 @@ class DropboxSync:
         with open(config_path, mode="r") as file:
             config = json.load(file)
 
-        refresh_token = config.get("refresh_token")
-        if refresh_token is None:
-            authorization_url = dropbox.DropboxOAuth2FlowNoRedirect(
+        refresh_token = config.get("refresh_token", "")
+        if len(refresh_token) < 1:
+            authorization_flow = dropbox.DropboxOAuth2FlowNoRedirect(
                 config["app_key"],
-                config["app_secret"],
-                token_access_type="legacy").start()
+                consumer_secret=config["app_secret"],
+                token_access_type="offline")\
+
+            authorization_url = authorization_flow.start()
 
             print(f"1. Go to: {authorization_url:s}")
             print("2. Click \"Allow\" (you might have to log in first).")
             print("3. Copy the authorization code.")
             auth_code = input("Enter the authorization code here: ").strip()
 
-            oauth_result = dropbox.DropboxOAuth2FlowNoRedirect(
-                config["app_key"],
-                config["app_secret"],
-                token_access_type="offline"
-            ).finish(auth_code)
+            oauth_result = authorization_flow.finish(auth_code)
 
             config["refresh_token"] = oauth_result.refresh_token
 
@@ -46,6 +44,12 @@ class DropboxSync:
 
             print("Authentication complete. Refresh token saved to config file.")
 
+        self.client = dropbox.Dropbox(
+            app_key=config["app_key"],
+            app_secret=config["app_secret"],
+            oauth2_refresh_token=config["refresh_token"])
+
+        self.client.check_and_refresh_access_token()
         self.interval_seconds = config.get("interval_seconds", 60)
         self.local_folder = config["local_folder"]
         assert self.local_folder[-1] == "/"
@@ -55,12 +59,6 @@ class DropboxSync:
         assert self.dropbox_folder[-1] == "/"
         if len(self.dropbox_folder) < 2:
             self.dropbox_folder = ""
-
-        self.client = dropbox.Dropbox(
-            app_key=config["app_key"],
-            app_secret=config["app_secret"],
-            oauth2_refresh_token=config["refresh_token"]
-        )
 
         self.log_file = os.path.join("events.log")
         logging.basicConfig(filename=self.log_file, level=logging.INFO)
