@@ -21,10 +21,12 @@ class DropboxSync:
         with open(config_path, mode="r") as file:
             config = json.load(file)
 
-        access_token = config.get("access_token")
-        if access_token is None:
+        refresh_token = config.get("refresh_token")
+        if refresh_token is None:
             authorization_url = dropbox.DropboxOAuth2FlowNoRedirect(
-                config["app_key"], config["app_secret"], token_access_type="legacy").start()
+                config["app_key"],
+                config["app_secret"],
+                token_access_type="legacy").start()
 
             print(f"1. Go to: {authorization_url:s}")
             print("2. Click \"Allow\" (you might have to log in first).")
@@ -32,14 +34,16 @@ class DropboxSync:
             auth_code = input("Enter the authorization code here: ").strip()
 
             oauth_result = dropbox.DropboxOAuth2FlowNoRedirect(
-                config["app_key"], config["app_secret"], token_access_type="legacy").finish(auth_code)
-            access_token = oauth_result.access_token
-            config["access_token"] = access_token
+                config["app_key"],
+                config["app_secret"],
+                token_access_type="legacy").finish(auth_code)
+
+            config["refresh_token"] = oauth_result.refresh_token
 
             with open(config_path, mode="w") as file:
                 json.dump(config, file, indent=2)
 
-            print("Authentication complete. Access token has been saved to config file.")
+            print("Authentication complete. Refresh token saved to config file.")
 
         self.interval_seconds = config.get("interval_seconds", 60)
         self.local_folder = config["local_folder"]
@@ -51,7 +55,11 @@ class DropboxSync:
         if len(self.dropbox_folder) < 2:
             self.dropbox_folder = ""
 
-        self.client = dropbox.Dropbox(config.pop("access_token"))
+        self.client = dropbox.Dropbox(
+            app_key=config["app_key"],
+            app_secret=config["app_secret"],
+            oauth2_refresh_token=config["refresh_token"]
+        )
 
         self.log_file = os.path.join("events.log")
         logging.basicConfig(filename=self.log_file, level=logging.INFO)
