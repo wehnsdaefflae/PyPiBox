@@ -36,7 +36,8 @@ class DropboxSync:
             oauth_result = dropbox.DropboxOAuth2FlowNoRedirect(
                 config["app_key"],
                 config["app_secret"],
-                token_access_type="legacy").finish(auth_code)
+                token_access_type="offline"
+            ).finish(auth_code)
 
             config["refresh_token"] = oauth_result.refresh_token
 
