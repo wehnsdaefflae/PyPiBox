@@ -3,40 +3,43 @@ import pathlib
 import time
 
 
+def make_file(file_name: str) -> None:
+    raise NotImplemented()
+
+
+def get_hash(path: pathlib.Path) -> str:
+    raise NotImplemented()
+
+
+def generate_random_string() -> str:
+    raise NotImplemented()
+
+
+def directories_in_sync(directory_a: pathlib.Path, directory_b: pathlib.Path) -> bool:
+    # check directory names, file names, and file hashes
+    raise NotImplemented()
+
+
+def directory_up_to_date(directory: pathlib.Path, index: dict[str, str]) -> bool:
+    # check names and hashes
+    raise NotImplemented()
+
+
 def main():
-    local_files = set()
-    remote_files = set()
+    local_files = dict()
+    remote_files = dict()
 
     local_folder = pathlib.Path("")
     remote_folder = pathlib.Path("")
 
     for file_index in range(1_000):
-        delete = random.random() < .5
-        local = random.random() < .5
+        # create new file locally
+        # create new file remotely
+        # modify file locally
+        # modify file remotely
+        # delete file locally
+        # delete file remotely
 
-        file_name = f"test_file_{file_index:08d}.txt"
-
-        if delete and local and len(local_files) >= 1:
-            file_name = random.choice(list(local_files))
-            file_path = local_folder / file_name
-            local_files.remove(file_path)
-            file_path.unlink()
-
-        elif delete and not local and len(remote_files) >= 1:
-            file_name = random.choice(list(remote_files))
-            file_path = remote_folder / file_name
-            remote_files.remove(file_path)
-            file_path.unlink()
-
-        elif local:
-            file_path = local_folder / file_name
-            local_files.add(file_name)
-            file_path.touch()
-
-        else:
-            file_path = remote_folder / file_name
-            remote_files.add(file_name)
-            file_path.touch()
 
         time.sleep(random.random())
         if file_index % 100 == 0:
