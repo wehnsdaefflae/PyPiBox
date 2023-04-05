@@ -78,9 +78,9 @@ def get_mod_time_locally(file_path: str) -> float:
     return round(timestamp, 1)
 
 
-def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]) -> float:
+def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata], offset: float = 2 * 60 * 60) -> float:
     stat = entry.server_modified
-    return stat.timestamp() + 2 * 60 * 60
+    return stat.timestamp() + offset
 
 
 def depth(path_str: str) -> int:

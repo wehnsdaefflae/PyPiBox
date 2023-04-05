@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import os
+import pathlib
 import time
 from typing import Optional
 
@@ -69,6 +70,8 @@ class DropboxSync:
         self.last_local_index = dict()
         self.last_remote_index = dict()
 
+        self.time_offset = -1.
+
     def _get_local_index(self: DropboxSync) -> FILE_INDEX:
         logging.info("Getting local index...")
         local_file_index = dict()
@@ -98,7 +101,7 @@ class DropboxSync:
         while True:
             for entry in result.entries:
                 if isinstance(entry, db_files.FileMetadata):
-                    mod_dt = get_mod_time_remotely(entry)
+                    mod_dt = get_mod_time_remotely(entry, offset=self.time_offset)
                     db_hash = entry.content_hash
                     each_file = FileInfo(entry.path_display[length:], mod_dt, db_hash)
                     remote_index[each_file.path] = each_file
@@ -144,6 +147,15 @@ class DropboxSync:
                     continue
 
             src_path = self.local_folder + each_file.path
+            stats = os.stat(src_path)
+            if stats.st_size > 150 * 1024 * 1024:
+                # self.client.files_upload_session_start(open(src_path, "rb").read())
+                # self.client.files_upload_session_finish(open(src_path, "rb").read())
+                # todo: use `files_upload_session_start` instead
+                msg = f"File {each_path:s} is too large. Skipping..."
+                logging.critical(msg)
+                raise ValueError(msg)
+
             with open(src_path, mode="rb") as file:
                 self.client.files_upload(file.read(), dst_path, mode=db_files.WriteMode("overwrite"))
                 # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
@@ -195,9 +207,23 @@ class DropboxSync:
         self.client.files_delete_batch(file_entries)
 
         folders = [each_file.path_no_tail_slash for _, each_file in file_index.items() if each_file.is_folder]
+        folders.sort(key=depth)
+        deleted = set()
+        delete_args = []
+        for each_path in folders:
+            if any(each_path.startswith(each_deleted) for each_deleted in deleted):
+                continue
+            delete_args.append(DeleteArg(self.dropbox_folder + each_path))
+            deleted.add(each_path)
+
+        for i in range(0, len(delete_args), 1000):
+            self.client.files_delete_batch(delete_args[i:i + 1000])
+
+        """ simple variant             
         folders.sort(key=depth, reverse=True)
         folder_entries = [DeleteArg(self.dropbox_folder + each_path) for each_path in folders]
         self.client.files_delete_batch(folder_entries)
+        """
 
     def _method_delete_local(self: DropboxSync, file_index: FILE_INDEX) -> None:
         len_paths = len(file_index)
@@ -223,7 +249,7 @@ class DropboxSync:
                 return FileInfo(f"{each_path}/", -1., None)
 
             if isinstance(entry, db_files.FileMetadata):
-                return FileInfo(each_path, get_mod_time_remotely(entry), entry.content_hash)
+                return FileInfo(each_path, get_mod_time_remotely(entry, offset=self.time_offset), entry.content_hash)
 
         except db_exceptions.ApiError as err:
             if err.error.is_path() and err.error.get_path().is_not_found():
@@ -245,12 +271,12 @@ class DropboxSync:
 
             for each_entry in result.entries:
                 if isinstance(each_entry, db_files.FolderMetadata):
-                    mod_dt = get_mod_time_remotely(each_entry)
+                    mod_dt = get_mod_time_remotely(each_entry, offset=self.time_offset)
                     each_dir = FileInfo(f"{each_entry.path_display}/", mod_dt, None)
                     created[each_dir.path] = each_dir
 
                 elif isinstance(each_entry, db_files.FileMetadata):
-                    mod_dt = get_mod_time_remotely(each_entry)
+                    mod_dt = get_mod_time_remotely(each_entry, offset=self.time_offset)
                     db_hash = each_entry.content_hash
                     each_file = FileInfo(each_entry.path_display, mod_dt, db_hash)
                     created[each_file.path] = each_file
@@ -347,7 +373,28 @@ class DropboxSync:
         action(action_cache)
         return action_cache
 
+    def _get_time_offset(self: DropboxSync) -> float:
+        """Upload an empty file to get the time offset between the local and remote system."""
+        tmp_name = ".time_offset"
+
+        tmp_file = pathlib.Path(self.local_folder) / tmp_name
+        tmp_file.touch(exist_ok=True)
+        stat = tmp_file.stat()
+        local_time = stat.st_mtime
+
+        remote_path = self.dropbox_folder + tmp_name
+
+        with tmp_file.open(mode="rb") as file:
+            entry = self.client.files_upload(file.read(), remote_path, mode=db_files.WriteMode("overwrite"))
+            remote_time = entry.server_modified.timestamp()
+
+        tmp_file.unlink()
+        self.client.files_delete_v2(remote_path)
+        return local_time - remote_time
+
     def sync(self: DropboxSync) -> None:
+        self.time_offset = self._get_time_offset()
+
         local_index = self._get_local_index()
         remote_index = self._get_remote_index()
 
