@@ -1,90 +1,136 @@
+import json
+import unittest
 import os
-import random
-import pathlib
+import shutil
 import time
-import networkx
+from main import DropboxSync
 
 
-def make_file(file_name: str) -> None:
-    raise NotImplemented()
+class TestSyncClient(unittest.TestCase):
+    def setUp(self):
+        config = DropboxSync.get_config("test_config.json")
 
+        local_dropbox_mirror = "/"
 
-def get_hash(path: pathlib.Path) -> str:
-    raise NotImplemented()
+        self.local_folder = config['local_folder']
+        self.remote_folder = os.path.join(local_dropbox_mirror, config['dropbox_folder'])
 
+        os.makedirs(self.local_folder)
+        os.makedirs(self.remote_folder)
 
-def generate_random_string() -> str:
-    raise NotImplemented()
+        self.sync_client = DropboxSync(**config)
+        self.sync_client.sync()
 
+    def tearDown(self):
+        shutil.rmtree(self.local_folder)
+        shutil.rmtree(self.remote_folder)
 
-def directories_in_sync(directory_a: pathlib.Path, directory_b: pathlib.Path) -> bool:
-    # check directory names, file names, and file hashes
-    raise NotImplemented()
+    def test_file_creation(self):
+        # Local to remote
+        with open(os.path.join(self.local_folder, 'test_file.txt'), 'w') as f:
+            f.write('Test content')
+        time.sleep(2)  # Give time for syncing
+        self.assertTrue(os.path.isfile(os.path.join(self.remote_folder, 'test_file.txt')))
 
+        # Remote to local
+        with open(os.path.join(self.remote_folder, 'test_file_2.txt'), 'w') as f:
+            f.write('Test content 2')
+        time.sleep(2)  # Give time for syncing
+        self.assertTrue(os.path.isfile(os.path.join(self.local_folder, 'test_file_2.txt')))
 
-def directory_up_to_date(directory: pathlib.Path, index: dict[str, str]) -> bool:
-    # check names and hashes
-    raise NotImplemented()
+    def test_folder_creation(self):
+        # Local to remote
+        os.makedirs(os.path.join(self.local_folder, 'test_folder'))
+        time.sleep(2)  # Give time for syncing
+        self.assertTrue(os.path.isdir(os.path.join(self.remote_folder, 'test_folder')))
 
+        # Remote to local
+        os.makedirs(os.path.join(self.remote_folder, 'test_folder_2'))
+        time.sleep(2)  # Give time for syncing
+        self.assertTrue(os.path.isdir(os.path.join(self.local_folder, 'test_folder_2')))
 
-def find_leaves(tree):
-    leaves = [node for node in tree.nodes() if tree.degree(node) == 1 and node != 0]
-    return leaves
+    def test_file_modification(self):
+        # Local to remote
+        with open(os.path.join(self.local_folder, 'test_file.txt'), 'w') as f:
+            f.write('Test content')
+        time.sleep(2)  # Give time for syncing
+        with open(os.path.join(self.local_folder, 'test_file.txt'), 'a') as f:
+            f.write('Modified content')
+        time.sleep(2)  # Give time for syncing
+        with open(os.path.join(self.remote_folder, 'test_file.txt'), 'r') as f:
+            self.assertEqual(f.read(), 'Test contentModified content')
 
+        # Remote to local
+        with open(os.path.join(self.remote_folder, 'test_file_2.txt'), 'w') as f:
+            f.write('Test content 2')
+        time.sleep(2)  # Give time for syncing
+        with open(os.path.join(self.remote_folder, 'test_file_2.txt'), 'a') as f:
+            f.write('Modified content 2')
+        time.sleep(2)  # Give time for syncing
+        with open(os.path.join(self.local_folder, 'test_file_2.txt'), 'r') as f:
+            self.assertEqual(f.read(), 'Test content 2Modified content 2')
 
-def leaf_paths(tree, leaves):
-    root = 0  # Assuming the root node is 0, change it if required
-    for leaf in leaves:
-        yield networkx.shortest_path(tree, source=root, target=leaf)
+    def test_file_deletion(self):
+        # Local to remote
+        with open(os.path.join(self.local_folder, 'test_file.txt'), 'w') as f:
+            f.write('Test content')
+        time.sleep(2)  # Give time for syncing
+        os.remove(os.path.join(self.local_folder, 'test_file.txt'))
+        time.sleep(2)  # Give time for syncing
+        self.assertFalse(os.path.isfile(os.path.join(self.remote_folder, 'test_file.txt')))
 
+        # Remote to local
+        with open(os.path.join(self.remote_folder, 'test_file_2.txt'), 'w') as f:
+            f.write('Test content 2')
+        time.sleep(2)  # Give time for syncing
+        os.remove(os.path.join(self.remote_folder, 'test_file_2.txt'))
+        time.sleep(2)  # Give time for syncing
+        self.assertFalse(os.path.isfile(os.path.join(self.local_folder, 'test_file_2.txt')))
 
-def main():
-    local_folder = pathlib.Path("./local/")
-    num_nodes = 50  # Change the number of nodes in the tree as required
-    tree = networkx.random_tree(num_nodes)
-    leaves = find_leaves(tree)
-    directories = []
-    for each_path in leaf_paths(tree, leaves):
-        directories.append(local_folder / pathlib.Path(*(str(x) for x in each_path[1:])))
+    def test_folder_deletion(self):
+        # Local to remote
+        os.makedirs(os.path.join(self.local_folder, 'test_folder'))
+        time.sleep(2)  # Give time for syncing
+        shutil.rmtree(os.path.join(self.local_folder, 'test_folder'))
+        time.sleep(2)  # Give time for syncing
+        self.assertFalse(os.path.isdir(os.path.join(self.remote_folder, 'test_folder')))
 
-    directories.sort(key=lambda x: x.as_posix().count("/"))
-    for each_path in directories:
-        each_path.mkdir(parents=True, exist_ok=True)
+        # Remote to local
+        os.makedirs(os.path.join(self.remote_folder, 'test_folder_2'))
+        time.sleep(2)  # Give time for syncing
+        shutil.rmtree(os.path.join(self.remote_folder, 'test_folder_2'))
+        time.sleep(2)  # Give time for syncing
+        self.assertFalse(os.path.isdir(os.path.join(self.local_folder, 'test_folder_2')))
 
-    files = (each_path.with_suffix(".txt") for each_path in directories)
-    for each_path in files:
-        each_path.touch()
+    def test_conflict_resolution(self):
+        # Create the same file both locally and remotely
+        with open(os.path.join(self.local_folder, 'conflict_file.txt'), 'w') as f:
+            f.write('Local content')
+        with open(os.path.join(self.remote_folder, 'conflict_file.txt'), 'w') as f:
+            f.write('Remote content')
 
-    exit()
+        time.sleep(2)  # Give time for syncing
 
-    structure = networkx.random_tree(10, create_using=networkx.DiGraph, seed=42)
-    directories = networkx.dag_to_branching(structure)
-    for each_edge in directories:
-        print(each_edge)
+        # Check if both versions are preserved and conflict is resolved
+        local_files = os.listdir(self.local_folder)
+        remote_files = os.listdir(self.remote_folder)
 
-    exit()
-    local_files = dict()
-    remote_files = dict()
+        # Modify the following lines to check for the actual conflict resolution strategy implemented by the sync client
+        self.assertIn('conflict_file.txt', local_files)
+        self.assertIn('conflict_file_conflict.txt', local_files)  # Assuming the conflict resolution strategy creates a separate file with a suffix
+        self.assertIn('conflict_file.txt', remote_files)
+        self.assertIn('conflict_file_conflict.txt', remote_files)
 
-    local_folder = pathlib.Path("")
-    remote_folder = pathlib.Path("")
+        # Compare the content of the original and conflict files
+        with open(os.path.join(self.local_folder, 'conflict_file.txt'), 'r') as f:
+            local_content = f.read()
+        with open(os.path.join(self.local_folder, 'conflict_file_conflict.txt'), 'r') as f:
+            local_conflict_content = f.read()
 
-    for file_index in range(1_000):
-        # create new file locally
-        # create new file remotely
-        # modify file locally
-        # modify file remotely
-        # delete file locally
-        # delete file remotely
-
-
-        time.sleep(random.random())
-        if file_index % 100 == 0:
-            # check is sync
-            pass
-
-    # check is sync
+        self.assertIn('Local content', (local_content, local_conflict_content))
+        self.assertIn('Remote content', (local_content, local_conflict_content))
 
 
 if __name__ == '__main__':
-    main()
+    unittest.main()
+

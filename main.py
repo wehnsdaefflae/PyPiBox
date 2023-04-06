@@ -3,7 +3,7 @@ import json
 import os
 import pathlib
 import time
-from typing import Optional
+from typing import Optional, Any
 
 import dropbox
 from dropbox import files as db_files, exceptions as db_exceptions
@@ -18,33 +18,7 @@ from utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
-    def __init__(self: DropboxSync, config_path: str) -> None:
-        with open(config_path, mode="r") as file:
-            config = json.load(file)
-
-        refresh_token = config.get("refresh_token", "")
-        if len(refresh_token) < 1:
-            authorization_flow = dropbox.DropboxOAuth2FlowNoRedirect(
-                config["app_key"],
-                consumer_secret=config["app_secret"],
-                token_access_type="offline")\
-
-            authorization_url = authorization_flow.start()
-
-            print(f"1. Go to: {authorization_url:s}")
-            print("2. Click \"Allow\" (you might have to log in first).")
-            print("3. Copy the authorization code.")
-            auth_code = input("Enter the authorization code here: ").strip()
-
-            oauth_result = authorization_flow.finish(auth_code)
-
-            config["refresh_token"] = oauth_result.refresh_token
-
-            with open(config_path, mode="w") as file:
-                json.dump(config, file, indent=2)
-
-            print("Authentication complete. Refresh token saved to config file.")
-
+    def __init__(self: DropboxSync, config: dict[str, str]) -> None:
         self.client = dropbox.Dropbox(
             app_key=config["app_key"],
             app_secret=config["app_secret"],
@@ -71,6 +45,34 @@ class DropboxSync:
         self.last_remote_index = dict()
 
         self.time_offset = -1.
+
+    @staticmethod
+    def get_config(config_path: str) -> dict[str, Any]:
+        with open(config_path, mode="r") as file:
+            config = json.load(file)
+        refresh_token = config.get("refresh_token", "")
+        if len(refresh_token) < 1:
+            authorization_flow = dropbox.DropboxOAuth2FlowNoRedirect(
+                config["app_key"],
+                consumer_secret=config["app_secret"],
+                token_access_type="offline")
+
+            authorization_url = authorization_flow.start()
+
+            print(f"1. Go to: {authorization_url:s}")
+            print("2. Click \"Allow\" (you might have to log in first).")
+            print("3. Copy the authorization code.")
+            auth_code = input("Enter the authorization code here: ").strip()
+
+            oauth_result = authorization_flow.finish(auth_code)
+
+            config["refresh_token"] = oauth_result.refresh_token
+
+            with open(config_path, mode="w") as file:
+                json.dump(config, file, indent=2)
+
+            print("Authentication complete. Refresh token saved to config file.")
+        return config
 
     def _get_local_index(self: DropboxSync) -> FILE_INDEX:
         logging.info("Getting local index...")
@@ -119,6 +121,32 @@ class DropboxSync:
 
         return remote_index
 
+    def _upload_file(self, file_path: str, target_path: str) -> None:
+        file_size = os.path.getsize(file_path)
+        chunk_size = 4 * 1024 * 1024
+        stats = os.stat(file_path)
+        with open(file_path, mode="rb") as file:
+            if stats.st_size < chunk_size:
+                logging.info(f"Uploading {file_path:s}...")
+                self.client.files_upload(file.read(), target_path, mode=db_files.WriteMode("overwrite"))
+                # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
+
+            else:
+                logging.info(f"Uploading {file_path:s} in chunks...")
+                chunk = file.read(chunk_size)
+                upload_session_start_result = self.client.files_upload_session_start(chunk)
+                session_id = upload_session_start_result.session_id
+                cursor = db_files.UploadSessionCursor(session_id=session_id, offset=file.tell())
+                commit = db_files.CommitInfo(path=target_path)
+
+                while file.tell() < file_size:
+                    chunk = file.read(chunk_size)
+                    if chunk_size >= file_size - file.tell():
+                        self.client.files_upload_session_finish(chunk, cursor, commit)
+                    else:
+                        self.client.files_upload_session_append_v2(chunk, cursor)
+                        cursor = db_files.UploadSessionCursor(session_id=session_id, offset=file.tell())
+
     def _method_upload(self: DropboxSync, file_index: FILE_INDEX) -> None:
         len_paths = len(file_index)
         if len_paths < 1:
@@ -147,19 +175,7 @@ class DropboxSync:
                     continue
 
             src_path = self.local_folder + each_file.path
-            stats = os.stat(src_path)
-            if stats.st_size > 150 * 1024 * 1024:
-                # self.client.files_upload_session_start(open(src_path, "rb").read())
-                # self.client.files_upload_session_finish(open(src_path, "rb").read())
-                # todo: use `files_upload_session_start` instead
-                msg = f"File {each_path:s} is too large. Skipping..."
-                logging.critical(msg)
-                raise ValueError(msg)
-
-            with open(src_path, mode="rb") as file:
-                self.client.files_upload(file.read(), dst_path, mode=db_files.WriteMode("overwrite"))
-                # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
-                # self.client.files_upload_session_start()
+            self._upload_file(src_path, dst_path)
 
     def _method_download(self: DropboxSync, file_index: FILE_INDEX) -> None:
         len_paths = len(file_index)
@@ -414,7 +430,10 @@ class DropboxSync:
 
 
 def main() -> None:
-    db_sync = DropboxSync("config.json")
+    config_path = "config.json"
+    config = DropboxSync.get_config(config_path)
+
+    db_sync = DropboxSync(**config)
 
     while True:
         db_sync.sync()
