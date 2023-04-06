@@ -18,19 +18,22 @@ from utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
-    def __init__(self: DropboxSync, config: dict[str, str]) -> None:
+    def __init__(self: DropboxSync,
+                 app_key: str, app_secret: str, refresh_token: str,
+                 interval_seconds: int,
+                 local_folder: str, dropbox_folder: str) -> None:
         self.client = dropbox.Dropbox(
-            app_key=config["app_key"],
-            app_secret=config["app_secret"],
-            oauth2_refresh_token=config["refresh_token"])
+            app_key=app_key,
+            app_secret=app_secret,
+            oauth2_refresh_token=refresh_token)
 
         self.client.check_and_refresh_access_token()
-        self.interval_seconds = config.get("interval_seconds", 60)
-        self.local_folder = config["local_folder"]
+        self.interval_seconds = interval_seconds
+        self.local_folder = local_folder
         assert self.local_folder[-1] == "/"
         os.makedirs(self.local_folder, exist_ok=True)
 
-        self.dropbox_folder = config["dropbox_folder"]
+        self.dropbox_folder = dropbox_folder
         assert self.dropbox_folder[-1] == "/"
         if len(self.dropbox_folder) < 2:
             self.dropbox_folder = ""
@@ -235,12 +238,6 @@ class DropboxSync:
         for i in range(0, len(delete_args), 1000):
             self.client.files_delete_batch(delete_args[i:i + 1000])
 
-        """ simple variant             
-        folders.sort(key=depth, reverse=True)
-        folder_entries = [DeleteArg(self.dropbox_folder + each_path) for each_path in folders]
-        self.client.files_delete_batch(folder_entries)
-        """
-
     def _method_delete_local(self: DropboxSync, file_index: FILE_INDEX) -> None:
         len_paths = len(file_index)
         if len_paths < 1:
@@ -406,10 +403,11 @@ class DropboxSync:
 
         tmp_file.unlink()
         self.client.files_delete_v2(remote_path)
-        return local_time - remote_time
+        return round(local_time - remote_time, 2)
 
     def sync(self: DropboxSync) -> None:
         self.time_offset = self._get_time_offset()
+        logging.info(f"Time offset: {self.time_offset:.2f} s")
 
         local_index = self._get_local_index()
         remote_index = self._get_remote_index()
