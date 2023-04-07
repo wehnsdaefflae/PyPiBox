@@ -49,6 +49,9 @@ class DropboxSync:
 
         self.time_offset = -1.
 
+    def close(self: DropboxSync) -> None:
+        self.client.close()
+
     @staticmethod
     def get_config(config_path: str) -> dict[str, Any]:
         with open(config_path, mode="r") as file:
@@ -421,9 +424,15 @@ class DropboxSync:
         self.deleted_locally = self._sync_action(remote_delta.deleted, local_index, SyncAction.DEL, SyncDirection.DOWN)
 
         self.last_local_index.clear()
+        local_index.update(self.downloaded)
+        for each_path in self.deleted_locally:
+            local_index.pop(each_path)
         self.last_local_index.update(local_index)
 
         self.last_remote_index.clear()
+        remote_index.update(self.uploaded)
+        for each_path in self.deleted_remotely:
+            remote_index.pop(each_path)
         self.last_remote_index.update(remote_index)
 
 
