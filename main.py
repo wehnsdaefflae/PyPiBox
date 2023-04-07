@@ -19,18 +19,20 @@ from utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
-    def _setup_logging(self) -> None:
+
+    @staticmethod
+    def _logging_handlers() -> set[logging.StreamHandler]:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(formatter)
+        handler_stdout = logging.StreamHandler(sys.stdout)
+        handler_stdout.setLevel(logging.DEBUG)
+        handler_stdout.setFormatter(formatter)
 
-        handler = logging.FileHandler("events.log")
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(formatter)
+        handler_file = logging.FileHandler("events.log")
+        handler_file.setLevel(logging.DEBUG)
+        handler_file.setFormatter(formatter)
 
-        self.main_logger.addHandler(handler)
+        return {handler_stdout, handler_file}
 
     def __init__(self: DropboxSync,
                  app_key: str, app_secret: str, refresh_token: str,
@@ -42,7 +44,9 @@ class DropboxSync:
             oauth2_refresh_token=refresh_token)
 
         self.main_logger = logging.getLogger()
-        self._setup_logging()
+        self.main_logger.setLevel(logging.DEBUG)
+        for each_handler in DropboxSync._logging_handlers():
+            self.main_logger.addHandler(each_handler)
 
         self.client.check_and_refresh_access_token()
         self.interval_seconds = interval_seconds
