@@ -55,9 +55,8 @@ class DropboxSync:
         os.makedirs(self.local_folder, exist_ok=True)
 
         self.dropbox_folder = dropbox_folder
-        assert self.dropbox_folder[-1] == "/"
-        if len(self.dropbox_folder) < 2:
-            self.dropbox_folder = ""
+        if len(self.dropbox_folder) >= 2:
+            assert self.dropbox_folder[-1] == "/"
 
         self.uploaded, self.downloaded = dict(), dict()
         self.deleted_remotely, self.deleted_locally = dict(), dict()
@@ -209,6 +208,7 @@ class DropboxSync:
             return
         self.main_logger.info(f"Downloading {len_paths:d} files")
 
+        # todo: fix double slashes when local_folder is concatenated with file_paths
         directories = [each_path for each_path, each_file in file_index.items() if each_file.is_folder]
         directories.sort(key=depth)
         for each_path in directories:
@@ -292,39 +292,6 @@ class DropboxSync:
                 return None
             else:
                 raise err
-
-    def __get_remote_delta(self: DropboxSync) -> tuple[FILE_INDEX, FILE_INDEX]:
-        raise Exception("Does not work.")
-
-        created = dict()
-        removed = dict()
-
-        result = self.client.files_list_folder_get_latest_cursor(
-            self.dropbox_folder, recursive=True, include_deleted=True)
-
-        while True:
-            result = self.client.files_list_folder_continue(result.cursor)
-
-            for each_entry in result.entries:
-                if isinstance(each_entry, db_files.FolderMetadata):
-                    mod_dt = get_mod_time_remotely(each_entry, offset=self.time_offset)
-                    each_dir = FileInfo(f"{each_entry.path_display}/", mod_dt, None)
-                    created[each_dir.path] = each_dir
-
-                elif isinstance(each_entry, db_files.FileMetadata):
-                    mod_dt = get_mod_time_remotely(each_entry, offset=self.time_offset)
-                    db_hash = each_entry.content_hash
-                    each_file = FileInfo(each_entry.path_display, mod_dt, db_hash)
-                    created[each_file.path] = each_file
-
-                elif isinstance(each_entry, db_files.DeletedMetadata):
-                    each_path = FileInfo(each_entry.path_display, -1., None)
-                    removed[each_path.path] = each_path
-
-            if not result.has_more:
-                break
-
-        return created, removed
 
     @staticmethod
     def _different_hash(file: FileInfo, last_index: FILE_INDEX) -> bool:
@@ -418,10 +385,7 @@ class DropboxSync:
         stat = tmp_file.stat()
         local_time = stat.st_mtime
 
-        if len(self.dropbox_folder) < 1:
-            remote_path = "/" + tmp_name
-        else:
-            remote_path = self.dropbox_folder + tmp_name
+        remote_path = self.dropbox_folder + tmp_name
 
         with tmp_file.open(mode="rb") as file:
             entry = self.client.files_upload(file.read(), remote_path, mode=db_files.WriteMode("overwrite"))
