@@ -419,9 +419,9 @@ class DropboxSync:
         local_time = stat.st_mtime
 
         if len(self.dropbox_folder) < 1:
-            self.dropbox_folder = "/"
-
-        remote_path = self.dropbox_folder + tmp_name
+            remote_path = "/" + tmp_name
+        else:
+            remote_path = self.dropbox_folder + tmp_name
 
         with tmp_file.open(mode="rb") as file:
             entry = self.client.files_upload(file.read(), remote_path, mode=db_files.WriteMode("overwrite"))
