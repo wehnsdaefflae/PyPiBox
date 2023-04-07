@@ -146,8 +146,9 @@ class DropboxSync:
         return remote_index
 
     def _upload_file(self, file_path: str, target_path: str) -> None:
+        megabyte = 1024 * 1024
         file_size = os.path.getsize(file_path)
-        chunk_size = 4 * 1024 * 1024
+        chunk_size = 4 * megabyte
         stats = os.stat(file_path)
         with open(file_path, mode="rb") as file:
             if stats.st_size < chunk_size:
@@ -163,7 +164,6 @@ class DropboxSync:
                 commit = db_files.CommitInfo(path=target_path)
 
                 while file.tell() < file_size:
-                    megabyte = 1024 * 1024
                     progress = f"{file.tell() / megabyte:.1f} / {file_size / megabyte:.1f} MB"
                     self.main_logger.info(f"Uploading {file_path:s} {progress:s}...")
                     chunk = file.read(chunk_size)
