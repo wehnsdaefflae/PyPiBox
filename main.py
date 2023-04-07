@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import os
+import sys
 import pathlib
 import time
 from typing import Optional, Any
@@ -18,6 +19,19 @@ from utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
+    def _setup_logging(self) -> None:
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(formatter)
+
+        handler = logging.FileHandler("events.log")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(formatter)
+
+        self.main_logger.addHandler(handler)
+
     def __init__(self: DropboxSync,
                  app_key: str, app_secret: str, refresh_token: str,
                  interval_seconds: int,
@@ -26,6 +40,9 @@ class DropboxSync:
             app_key=app_key,
             app_secret=app_secret,
             oauth2_refresh_token=refresh_token)
+
+        self.main_logger = logging.getLogger()
+        self._setup_logging()
 
         self.client.check_and_refresh_access_token()
         self.interval_seconds = interval_seconds
@@ -37,9 +54,6 @@ class DropboxSync:
         assert self.dropbox_folder[-1] == "/"
         if len(self.dropbox_folder) < 2:
             self.dropbox_folder = ""
-
-        self.log_file = os.path.join("events.log")
-        logging.basicConfig(filename=self.log_file, level=logging.INFO)
 
         self.uploaded, self.downloaded = dict(), dict()
         self.deleted_remotely, self.deleted_locally = dict(), dict()
@@ -81,7 +95,7 @@ class DropboxSync:
         return config
 
     def _get_local_index(self: DropboxSync) -> FILE_INDEX:
-        logging.info("Getting local index...")
+        self.main_logger.info("Getting local index...")
         local_file_index = dict()
         length = len(self.local_folder)
         for root, dirs, file_paths in os.walk(self.local_folder):
@@ -101,7 +115,7 @@ class DropboxSync:
         return local_file_index
 
     def _get_remote_index(self: DropboxSync) -> FILE_INDEX:
-        logging.info("Getting remote index...")
+        self.main_logger.info("Getting remote index...")
         remote_index = dict()
         length = len(self.dropbox_folder)
         result = self.client.files_list_folder(self.dropbox_folder, recursive=True)
@@ -133,12 +147,12 @@ class DropboxSync:
         stats = os.stat(file_path)
         with open(file_path, mode="rb") as file:
             if stats.st_size < chunk_size:
-                logging.info(f"Uploading {file_path:s}...")
+                self.main_logger.info(f"Uploading {file_path:s}...")
                 self.client.files_upload(file.read(), target_path, mode=db_files.WriteMode("overwrite"))
                 # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
 
             else:
-                logging.info(f"Uploading {file_path:s} in chunks...")
+                self.main_logger.info(f"Uploading {file_path:s} in chunks...")
                 chunk = file.read(chunk_size)
                 upload_session_start_result = self.client.files_upload_session_start(chunk)
                 session_id = upload_session_start_result.session_id
@@ -157,7 +171,7 @@ class DropboxSync:
         len_paths = len(file_index)
         if len_paths < 1:
             return
-        logging.info(f"Uploading {len_paths:d} files")
+        self.main_logger.info(f"Uploading {len_paths:d} files")
 
         for each_path_tail_slash, each_file in file_index.items():
             each_path = each_file.path_no_tail_slash
@@ -177,7 +191,7 @@ class DropboxSync:
                     continue
 
                 if remote_file.timestamp >= each_file.timestamp:
-                    logging.warning(f"Conflict: More recent remote file {each_path:s}. Skipping...")
+                    self.main_logger.warning(f"Conflict: More recent remote file {each_path:s}. Skipping...")
                     continue
 
             src_path = self.local_folder + each_file.path
@@ -187,7 +201,7 @@ class DropboxSync:
         len_paths = len(file_index)
         if len(file_index) < 1:
             return
-        logging.info(f"Downloading {len_paths:d} files")
+        self.main_logger.info(f"Downloading {len_paths:d} files")
 
         directories = [each_path for each_path, each_file in file_index.items() if each_file.is_folder]
         directories.sort(key=depth)
@@ -210,7 +224,7 @@ class DropboxSync:
 
                 local_time = get_mod_time_locally(local_path)
                 if local_time >= each_file.timestamp:
-                    logging.warning(f"Conflict: More recent local file {each_path:s}. Skipping...")
+                    self.main_logger.warning(f"Conflict: More recent local file {each_path:s}. Skipping...")
                     continue
 
             self.client.files_download_to_file(local_path, remote_path)
@@ -220,7 +234,7 @@ class DropboxSync:
         len_paths = len(file_index)
         if len_paths < 1:
             return
-        logging.warning(f"Deleting {len_paths:d} remote files")
+        self.main_logger.warning(f"Deleting {len_paths:d} remote files")
 
         file_entries = [
             DeleteArg(self.dropbox_folder + each_file.path)
@@ -245,7 +259,7 @@ class DropboxSync:
         len_paths = len(file_index)
         if len_paths < 1:
             return
-        logging.warning(f"Deleting {len_paths:d} local files")
+        self.main_logger.warning(f"Deleting {len_paths:d} local files")
 
         for each_path, each_file in file_index.items():
             if not each_file.is_folder:
@@ -375,7 +389,7 @@ class DropboxSync:
                     action_cache[each_path] = src_file
 
                 else:
-                    logging.warning(f"Conflict {method:s} {each_path:s} {direction:s}: source is older than target.")
+                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: source is older than target.")
                     continue
 
             elif method == SyncAction.DEL:
@@ -383,7 +397,7 @@ class DropboxSync:
                     action_cache[each_path] = src_file
 
                 else:
-                    logging.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target.")
+                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target.")
                     continue
 
         action(action_cache)
@@ -410,7 +424,7 @@ class DropboxSync:
 
     def sync(self: DropboxSync) -> None:
         self.time_offset = self._get_time_offset()
-        logging.info(f"Time offset: {self.time_offset:.2f} s")
+        self.main_logger.info(f"Time offset: {self.time_offset:.2f} ms")
 
         local_index = self._get_local_index()
         remote_index = self._get_remote_index()
