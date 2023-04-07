@@ -156,7 +156,6 @@ class DropboxSync:
                 # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
 
             else:
-                self.main_logger.info(f"Uploading {file_path:s} in chunks...")
                 chunk = file.read(chunk_size)
                 upload_session_start_result = self.client.files_upload_session_start(chunk)
                 session_id = upload_session_start_result.session_id
@@ -164,6 +163,9 @@ class DropboxSync:
                 commit = db_files.CommitInfo(path=target_path)
 
                 while file.tell() < file_size:
+                    megabyte = 1024 * 1024
+                    progress = f"{file.tell() / megabyte:.1f} / {file_size / megabyte:.1f} MB"
+                    self.main_logger.info(f"Uploading {file_path:s} {progress:s}...")
                     chunk = file.read(chunk_size)
                     if chunk_size >= file_size - file.tell():
                         self.client.files_upload_session_finish(chunk, cursor, commit)
