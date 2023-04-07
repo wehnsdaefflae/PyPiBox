@@ -148,7 +148,7 @@ class DropboxSync:
     def _upload_file(self, file_path: str, target_path: str) -> None:
         megabyte = 1024 * 1024
         file_size = os.path.getsize(file_path)
-        chunk_size = 4 * megabyte
+        chunk_size = 8 * megabyte
         stats = os.stat(file_path)
         with open(file_path, mode="rb") as file:
             if stats.st_size < chunk_size:
@@ -160,18 +160,18 @@ class DropboxSync:
                 chunk = file.read(chunk_size)
                 upload_session_start_result = self.client.files_upload_session_start(chunk)
                 session_id = upload_session_start_result.session_id
-                cursor = db_files.UploadSessionCursor(session_id=session_id, offset=file.tell())
-                commit = db_files.CommitInfo(path=target_path)
 
-                while file.tell() < file_size:
-                    progress = f"{file.tell() / megabyte:.1f} / {file_size / megabyte:.1f} MB"
+                while (byte_position := file.tell()) < file_size:
+                    progress = f"{byte_position / megabyte:.1f} / {file_size / megabyte:.1f} MB"
                     self.main_logger.info(f"Uploading {file_path:s} {progress:s}...")
+
                     chunk = file.read(chunk_size)
-                    if chunk_size >= file_size - file.tell():
-                        self.client.files_upload_session_finish(chunk, cursor, commit)
-                    else:
+                    cursor = db_files.UploadSessionCursor(session_id=session_id, offset=byte_position)
+                    if byte_position + len(chunk) < file_size:
                         self.client.files_upload_session_append_v2(chunk, cursor)
-                        cursor = db_files.UploadSessionCursor(session_id=session_id, offset=file.tell())
+                    else:
+                        commit = db_files.CommitInfo(path=target_path)
+                        self.client.files_upload_session_finish(chunk, cursor, commit)
 
     def _method_upload(self: DropboxSync, file_index: FILE_INDEX) -> None:
         len_paths = len(file_index)
