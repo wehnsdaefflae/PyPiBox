@@ -33,7 +33,11 @@ class DropboxSync:
 
         return {handler_stdout, handler_file}
 
-    def __init__(self: DropboxSync, app_key: str, app_secret: str, refresh_token: str, interval_seconds: int, local_folder: str, dropbox_folder: str) -> None:
+    def __init__(self: DropboxSync, app_key: str, app_secret: str, refresh_token: str,
+                 interval_seconds: int,
+                 local_folder: str, dropbox_folder: str,
+                 debug: bool = True) -> None:
+
         self.client = dropbox.Dropbox(app_key=app_key, app_secret=app_secret,oauth2_refresh_token=refresh_token)
 
         self.main_logger = logging.getLogger()
@@ -53,6 +57,8 @@ class DropboxSync:
 
         self.last_local_index = dict()
         self.last_remote_index = dict()
+
+        self.debug = debug
 
         self.time_offset = -1.
 
@@ -309,7 +315,7 @@ class DropboxSync:
 
         return Delta(locally_modified, locally_removed), Delta(remotely_modified, remotely_removed)
 
-    def _sync_action(self, index_src: FILE_INDEX, index_dst: FILE_INDEX, method: SyncAction, direction: SyncDirection) -> FILE_INDEX:
+    def _sync_action(self, index_src: FILE_INDEX, index_dst: FILE_INDEX, method: SyncAction, direction: SyncDirection, debug: bool) -> FILE_INDEX:
         if direction == SyncDirection.UP:
             if method == SyncAction.DEL:
                 action = self._method_delete_remote
@@ -358,7 +364,11 @@ class DropboxSync:
                     self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target.")
                     continue
 
-        action(action_cache)
+        if debug:
+            self.main_logger.debug(f"Skipping action {action} on cache: {action_cache.keys()}")
+        else:
+            action(action_cache)
+
         return action_cache
 
     @staticmethod
@@ -396,11 +406,10 @@ class DropboxSync:
 
         local_delta, remote_delta = self._get_deltas(local_index, remote_index)
 
-        # modifying works, creating works, deletion does not
-        self.uploaded = self._sync_action(local_delta.modified, remote_index, SyncAction.ADD, SyncDirection.UP)
-        self.deleted_remotely = self._sync_action(local_delta.deleted, remote_index, SyncAction.DEL, SyncDirection.UP)
-        self.downloaded = self._sync_action(remote_delta.modified, local_index, SyncAction.ADD, SyncDirection.DOWN)
-        self.deleted_locally = self._sync_action(remote_delta.deleted, local_index, SyncAction.DEL, SyncDirection.DOWN)
+        self.uploaded = self._sync_action(local_delta.modified, remote_index, SyncAction.ADD, SyncDirection.UP, self.debug)
+        self.deleted_remotely = self._sync_action(local_delta.deleted, remote_index, SyncAction.DEL, SyncDirection.UP, self.debug)
+        self.downloaded = self._sync_action(remote_delta.modified, local_index, SyncAction.ADD, SyncDirection.DOWN, False)
+        self.deleted_locally = self._sync_action(remote_delta.deleted, local_index, SyncAction.DEL, SyncDirection.DOWN, False)
 
         self.last_local_index.clear()
         local_index.update(self.downloaded)
