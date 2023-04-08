@@ -4,6 +4,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import pathlib
+from abc import abstractmethod, ABC
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -20,44 +21,105 @@ class SyncAction(str, enum.Enum):
     DEL = "del"
 
 
-class FileInfo:
-    def __init__(self, path: pathlib.PurePosixPath, timestamp: float, is_folder: bool, dropbox_hash: Optional[str] = None):
+class FileInfo(ABC):
+    def __init__(self, path: pathlib.PurePosixPath, is_folder: bool):
         self.path = path
-        self.timestamp = timestamp
         self.is_folder = is_folder
-        self.dropbox_hash = dropbox_hash
 
-    @property
-    def actual(self) -> pathlib.Path:
-        return pathlib.Path(self.path)
+    @abstractmethod
+    def get_dropbox_hash(self) -> Optional[str]:
+        pass
 
-    @property
-    def is_deleted(self) -> bool:
-        return self.dropbox_hash is None and not self.is_folder
+    @abstractmethod
+    def get_size(self) -> int:
+        pass
+
+    @abstractmethod
+    def get_modified_timestamp(self) -> float:
+        pass
 
     def __eq__(self, other: FileInfo) -> bool:
-        if not isinstance(other, FileInfo):
+        if not isinstance(other, LocalFile):
             return False
 
-        return self.path == other.path and self.dropbox_hash == other.dropbox_hash
+        return self.path.as_posix() == other.actual.as_posix() and self.get_modified_timestamp() == other.get_modified_timestamp()
 
     def __hash__(self) -> int:
-        return hash((self.path, self.dropbox_hash))
+        return hash((self.path.as_posix(), self.get_modified_timestamp(), self.get_size()))
 
     def __repr__(self):
-        return f"FileInfo(path={self.path.as_posix():s}, timestamp={self.timestamp:.2f}, is_folder={self.is_folder!s:s}, hash={self.dropbox_hash:s})"
+        return f"FileInfo(path={self.path.as_posix():s}, is_folder={self.is_folder!s:s})"
 
     def __str__(self):
         return self.__repr__()
 
 
-FILE_INDEX = dict[pathlib.PurePosixPath, FileInfo]
+class LocalFile(FileInfo):
+    def __init__(self, path: pathlib.Path, is_folder: bool):
+        super().__init__(pathlib.PurePosixPath(path.as_posix()), is_folder)
+        self.actual = path
+        self.dropbox_hash = None
+        self.size = -1
+        self.timestamp = -1.
+
+    def get_dropbox_hash(self) -> Optional[str]:
+        if self.is_folder:
+            return None
+
+        if self.dropbox_hash is None:
+            self.dropbox_hash = compute_dropbox_hash(self.actual)
+
+        return self.dropbox_hash
+
+    def get_size(self) -> int:
+        if self.size < 0:
+            stat = self.actual.stat()
+            self.size = stat.st_size
+        return self.size
+
+    def get_modified_timestamp(self) -> float:
+        if self.timestamp < 0.:
+            self.timestamp = get_mod_time_locally(self.actual)
+
+        return self.timestamp
+
+
+class RemoteFile(FileInfo):
+    def get_dropbox_hash(self) -> Optional[str]:
+        return self.entry.content_hash
+
+    def get_size(self) -> int:
+        return self.entry.size
+
+    def get_modified_timestamp(self) -> float:
+        return self.entry.client_modified.timestamp()
+
+    def __init__(self, entry: Union[files.FileMetadata, files.FolderMetadata]):
+        super().__init__(pathlib.PurePosixPath(entry.path_lower), isinstance(entry, files.FolderMetadata))
+        self.entry = entry
+
+
+LOCAL_FILE_INDEX = dict[pathlib.PurePosixPath, LocalFile]
+REMOTE_FILE_INDEX = dict[pathlib.PurePosixPath, RemoteFile]
+FILE_INDEX = Union[LOCAL_FILE_INDEX, REMOTE_FILE_INDEX]
 
 
 @dataclass
-class Delta:
+class Delta(ABC):
     modified: FILE_INDEX
     deleted: FILE_INDEX
+
+
+@dataclass
+class LocalDelta(Delta):
+    modified: LOCAL_FILE_INDEX
+    deleted: LOCAL_FILE_INDEX
+
+
+@dataclass
+class RemoteDelta(Delta):
+    modified: REMOTE_FILE_INDEX
+    deleted: REMOTE_FILE_INDEX
 
 
 def compute_dropbox_hash(file_path: pathlib.Path) -> str:
@@ -81,9 +143,15 @@ def get_mod_time_locally(file_path: pathlib.Path) -> float:
     return round(timestamp, 1)
 
 
+def get_size_locally(file_path: pathlib.Path) -> int:
+    """Returns the size of a file in bytes."""
+    stat = file_path.stat()
+    return stat.st_size
+
+
 def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata], offset: float = 2 * 60 * 60) -> float:
-    stat = entry.server_modified
-    return stat.timestamp() + offset
+    stat = entry.client_modified
+    return stat.timestamp()
 
 
 def depth(file_path: pathlib.PurePath) -> int:
