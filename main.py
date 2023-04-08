@@ -18,7 +18,6 @@ from utils import SyncDirection, SyncAction
 
 
 class DropboxSync:
-
     @staticmethod
     def _logging_handlers() -> set[logging.StreamHandler]:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -97,7 +96,11 @@ class DropboxSync:
         self.main_logger.info("Getting local index...")
         local_file_index = dict()
 
-        for each_path in self.local_folder.rglob("*"):
+        start_time = time.time()
+        for i, each_path in enumerate(self.local_folder.rglob("*")):
+            if i % 100 == 0:
+                self.main_logger.info(f"Scanned {i:d} local files in {time.time() - start_time:.2f} seconds.")
+
             mod_dt = get_mod_time_locally(each_path)
             pure_path = pathlib.PurePosixPath(each_path)
             pure_relative_path = pure_path.relative_to(self.local_folder)
@@ -117,6 +120,7 @@ class DropboxSync:
         self.main_logger.info("Getting remote index...")
         remote_index = dict()
 
+        time_start = time.time()
         dropbox_folder_str = DropboxSync._dropbox_path_format(self.dropbox_folder)
         result = self.client.files_list_folder(dropbox_folder_str, recursive=True)
 
@@ -138,6 +142,8 @@ class DropboxSync:
 
             if not result.has_more:
                 break
+
+            self.main_logger.info(f"Scanned {len(remote_index):d} remote files in {time.time() - time_start:.2f} seconds.")
 
             result = self.client.files_list_folder_continue(result.cursor)
 
@@ -374,8 +380,8 @@ class DropboxSync:
     @staticmethod
     def _dropbox_path_format(path: pathlib.PurePosixPath) -> str:
         posix = path.as_posix()
-        if posix.startswith("/"):
-            return posix[1:]
+        if posix == "/":
+            return ""
         return posix
 
     def _get_time_offset(self: DropboxSync) -> float:

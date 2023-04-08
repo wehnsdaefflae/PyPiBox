@@ -86,6 +86,6 @@ def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]
     return stat.timestamp() + offset
 
 
-def depth(path: pathlib.PurePath) -> int:
-    path_string = path.as_posix()
+def depth(file_path: pathlib.PurePath) -> int:
+    path_string = file_path.as_posix()
     return path_string.count("/")
