@@ -1,6 +1,7 @@
 # coding=utf-8
 from __future__ import annotations
 import json
+import os
 import sys
 import pathlib
 import time
@@ -51,9 +52,8 @@ class DropboxSync:
 
         self.dropbox_folder = pathlib.PurePosixPath(dropbox_folder)
 
-        self.uploaded, self.downloaded = dict(), dict()
-        self.deleted_remotely, self.deleted_locally = dict(), dict()
-
+        self.local_index = dict()
+        self.remote_index = dict()
         self.last_local_index = dict()
         self.last_remote_index = dict()
 
@@ -90,7 +90,7 @@ class DropboxSync:
             print("Authentication complete. Refresh token saved to config file.")
         return config
 
-    def _get_local_index(self: DropboxSync, last_index: LOCAL_FILE_INDEX) -> LOCAL_FILE_INDEX:
+    def _get_local_index(self: DropboxSync) -> LOCAL_FILE_INDEX:
         self.main_logger.info("Getting local index...")
         local_file_index = dict()
 
@@ -103,7 +103,7 @@ class DropboxSync:
             relative_path = each_path.relative_to(self.local_folder)
             pure_relative_path = pathlib.PurePosixPath(relative_path)
 
-            cached_file = last_index.get(pure_relative_path, None)
+            cached_file = self.last_local_index.get(pure_relative_path, None)
             if cached_file is not None and \
                     cached_file.get_modified_timestamp() == get_mod_time_locally(each_path) and \
                     cached_file.get_size() == get_size_locally(each_path):
@@ -222,8 +222,11 @@ class DropboxSync:
 
             remote_path = self.dropbox_folder / each_path
             db_remote_path = DropboxSync._dropbox_path_format(remote_path)
-            db_local_path = DropboxSync._dropbox_path_format(self.local_folder / each_path)
+            local_path = pathlib.PosixPath(self.local_folder / each_path)
+            db_local_path = DropboxSync._dropbox_path_format(local_path)
             self.client.files_download_to_file(db_local_path, db_remote_path)
+
+            os.utime(db_local_path, (time.time(), each_file.get_modified_timestamp()))
 
     def _method_delete_remote(self: DropboxSync, file_index: REMOTE_FILE_INDEX) -> None:
         len_paths = len(file_index)
@@ -261,37 +264,46 @@ class DropboxSync:
         for each_path, each_file in file_index.items():
             if not each_file.is_folder:
                 actual = each_file.actual
+                status = actual.stat()
+                if status.st_size != each_file.get_size() or status.st_mtime != each_file.get_modified_timestamp():
+                    self.main_logger.warning(f"Conflict: Unexpected local deletion target {each_path:s}. Skipping...")
+                    continue
                 actual.unlink()
 
-        folders = [each_file.actual for each_file in file_index.values() if each_file.is_folder]
-        folders.sort(key=depth, reverse=True)
+        folders = [each_file for each_file in file_index.values() if each_file.is_folder]
+        folders.sort(key=lambda x: depth(x.actual), reverse=True)
         for each_path in folders:
-            each_path.rmdir()
+            each_path_actual = each_path.actual
+            status = each_path_actual.stat()
+            if status.st_mtime != each_path.get_modified_timestamp():
+                self.main_logger.warning(f"Conflict: Unexpected local deletion target {each_path:s}. Skipping...")
+                continue
+            each_path_actual.rmdir()
 
     def _get_deltas(self, local_index: LOCAL_FILE_INDEX, remote_index: REMOTE_FILE_INDEX) -> tuple[LocalDelta, RemoteDelta]:
         locally_modified = {
             each_path: each_file
             for each_path, each_file in local_index.items()
-            if (each_file != self.last_local_index.get(each_path) and each_path not in self.downloaded)}
+            if (each_file != self.last_local_index.get(each_path))}
 
         remotely_modified = {
             each_path: each_file
             for each_path, each_file in remote_index.items()
-            if (each_file != self.last_remote_index.get(each_path) and each_path not in self.uploaded)}
+            if (each_file != self.last_remote_index.get(each_path))}
 
         locally_removed = {
             each_path: each_file
             for each_path, each_file in self.last_local_index.items()
-            if each_path not in local_index and each_path not in self.deleted_locally}
+            if each_path not in local_index}
 
         remotely_removed = {
             each_path: each_file
             for each_path, each_file in self.last_remote_index.items()
-            if each_path not in remote_index and each_path not in self.deleted_remotely}
+            if each_path not in remote_index}
 
         return LocalDelta(locally_modified, locally_removed), RemoteDelta(remotely_modified, remotely_removed)
 
-    def _sync_action(self, index_src: FILE_INDEX, index_dst: FILE_INDEX, method: SyncAction, direction: SyncDirection, debug: bool) -> FILE_INDEX:
+    def _sync_action(self, index_src: FILE_INDEX, index_dst: FILE_INDEX, method: SyncAction, direction: SyncDirection, debug: bool):
         if direction == SyncDirection.UP:
             assert isinstance(index_src, LOCAL_FILE_INDEX)
             assert isinstance(index_dst, REMOTE_FILE_INDEX)
@@ -309,7 +321,7 @@ class DropboxSync:
             assert isinstance(index_dst, LOCAL_FILE_INDEX)
 
             if method == SyncAction.DEL:
-                action = self._method_delete_local
+                action = self._method_delete_local  # double check
             elif method == SyncAction.ADD:
                 def action(remote_index: REMOTE_FILE_INDEX) -> None:
                     return self._method_download(remote_index, index_dst)
@@ -325,16 +337,20 @@ class DropboxSync:
             if dst_file is None:
                 if method == SyncAction.ADD:
                     action_cache[each_path] = src_file
+                    index_dst[each_path] = src_file
 
                 elif method == SyncAction.DEL:
+                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: file to delete does not exist.")
                     continue
 
             elif method == SyncAction.ADD:
                 if dst_file == src_file:
+                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: same file already exists.")
                     continue
 
                 elif dst_file.get_modified_timestamp() < src_file.get_modified_timestamp():
                     action_cache[each_path] = src_file
+                    index_dst[each_path] = src_file
 
                 else:
                     self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: source is older than target.")
@@ -343,17 +359,16 @@ class DropboxSync:
             elif method == SyncAction.DEL:
                 if dst_file == src_file:
                     action_cache[each_path] = src_file
+                    index_dst.pop(each_path, None)
 
                 else:
-                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target.")
+                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target file.")
                     continue
 
         if debug:
             self.main_logger.debug(f"Skipping action {action} on cache: {action_cache.keys()}")
         else:
             action(action_cache)
-
-        return action_cache
 
     @staticmethod
     def _dropbox_path_format(path: pathlib.PurePosixPath) -> str:
@@ -382,27 +397,18 @@ class DropboxSync:
         return round(local_time - remote_time, 2)
 
     def sync(self: DropboxSync) -> None:
-        local_index = self._get_local_index(self.last_local_index)
-        remote_index = self._get_remote_index()
+        self.local_index = self._get_local_index()
+        self.remote_index = self._get_remote_index()
 
-        local_delta, remote_delta = self._get_deltas(local_index, remote_index)
+        local_delta, remote_delta = self._get_deltas(self.local_index, self.remote_index)
 
-        self.uploaded = self._sync_action(local_delta.modified, remote_index, SyncAction.ADD, SyncDirection.UP, self.debug)
-        self.deleted_remotely = self._sync_action(local_delta.deleted, remote_index, SyncAction.DEL, SyncDirection.UP, self.debug)
-        self.downloaded = self._sync_action(remote_delta.modified, local_index, SyncAction.ADD, SyncDirection.DOWN, False)
-        self.deleted_locally = self._sync_action(remote_delta.deleted, local_index, SyncAction.DEL, SyncDirection.DOWN, False)
+        self._sync_action(local_delta.modified, self.remote_index, SyncAction.ADD, SyncDirection.UP, self.debug)
+        self._sync_action(local_delta.deleted, self.remote_index, SyncAction.DEL, SyncDirection.UP, self.debug)
+        self._sync_action(remote_delta.modified, self.local_index, SyncAction.ADD, SyncDirection.DOWN, False)
+        self._sync_action(remote_delta.deleted, self.local_index, SyncAction.DEL, SyncDirection.DOWN, False)
 
-        self.last_local_index.clear()
-        local_index.update(self.downloaded)
-        for each_path in self.deleted_locally:
-            local_index.pop(each_path)
-        self.last_local_index.update(local_index)
-
-        self.last_remote_index.clear()
-        remote_index.update(self.uploaded)
-        for each_path in self.deleted_remotely:
-            remote_index.pop(each_path)
-        self.last_remote_index.update(remote_index)
+        self.last_local_index = dict(self.local_index)
+        self.last_remote_index = dict(self.remote_index)
 
 
 def main() -> None:
