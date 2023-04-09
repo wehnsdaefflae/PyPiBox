@@ -40,5 +40,5 @@ def main(directory_to_monitor):
 
 
 if __name__ == "__main__":
-    main("/home/mark/FRITZ.NAS/500GB/data/")
+    main("/home/pi/500GB/data/")
     # main("/home/mark/Musik/")
