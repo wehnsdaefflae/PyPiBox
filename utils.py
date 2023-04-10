@@ -55,8 +55,8 @@ class FileInfo(ABC):
 
 
 class LocalFile(FileInfo):
-    def __init__(self, path: pathlib.PosixPath, is_folder: bool):
-        super().__init__(pathlib.PurePosixPath(path.as_posix()), is_folder)
+    def __init__(self, path: pathlib.PosixPath):
+        super().__init__(pathlib.PurePosixPath(path.as_posix()), path.is_dir())
         self.actual = path
         self.dropbox_hash = None
         self.size = -1
@@ -92,7 +92,9 @@ class RemoteFile(FileInfo):
         return self.entry.size
 
     def get_modified_timestamp(self) -> float:
-        return self.entry.client_modified.timestamp()
+        if isinstance(self.entry, files.FileMetadata):
+            return self.entry.client_modified.timestamp()
+        return 0.
 
     def __init__(self, entry: Union[files.FileMetadata, files.FolderMetadata]):
         super().__init__(pathlib.PurePosixPath(entry.path_lower), isinstance(entry, files.FolderMetadata))

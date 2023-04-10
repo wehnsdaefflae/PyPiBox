@@ -111,7 +111,7 @@ class DropboxSync:
                 local_file_index[pure_relative_path] = cached_file
                 continue
 
-            each_file = LocalFile(each_path, each_path.is_dir())
+            each_file = LocalFile(each_path)
             local_file_index[pure_relative_path] = each_file
 
         return local_file_index
@@ -224,7 +224,7 @@ class DropboxSync:
         files = [(each_path, each_file) for each_path, each_file in remote_index.items() if not each_file.is_folder]
         for each_path, expected in files:
             local_path = self.local_folder / each_path
-            local_file = LocalFile(local_path, False)
+            local_file = LocalFile(local_path)
             if local_file is not None:
                 continue
             elif local_file.is_folder:
