@@ -206,7 +206,7 @@ class DropboxSync:
                     continue
 
                 if remote_file.get_modified_timestamp() >= expected.get_modified_timestamp():
-                    self.main_logger.warning(f"Skipping conflict: More recent remote file {each_path:s}.")
+                    self.main_logger.warning(f"Skipping conflict: More recent remote file {each_path}.")
                     continue
 
             self._upload_file(expected, dst_path)
@@ -232,7 +232,7 @@ class DropboxSync:
             elif local_file.get_dropbox_hash() == expected.get_dropbox_hash():
                 continue
             elif local_file.get_modified_timestamp() >= expected.get_modified_timestamp():
-                self.main_logger.warning(f"Skipping conflict: More recent local file {each_path:s}.")
+                self.main_logger.warning(f"Skipping conflict: More recent local file {each_path}.")
                 continue
 
             db_remote_path = DropboxSync._dropbox_path_format(expected.path)
@@ -247,7 +247,7 @@ class DropboxSync:
             entry = self.client.files_get_metadata(db_path)
 
         except db_exceptions.ApiError as e:
-            self.main_logger.warning(f"Could not get metadata for {remote_path:s}: {str(e):s}")
+            self.main_logger.warning(f"Could not get metadata for {remote_path}: {str(e):s}")
             return None
 
         if isinstance(entry, db_files.FileMetadata) or isinstance(entry, db_files.FolderMetadata):
@@ -283,7 +283,7 @@ class DropboxSync:
                 continue
 
             elif expected.get_modified_timestamp() < remote_file.get_modified_timestamp():
-                self.main_logger.warning(f"Skipping conflict: Updated remote deletion target folder {each_path:s}.")
+                self.main_logger.warning(f"Skipping conflict: Updated remote deletion target folder {each_path}.")
                 continue
 
             each_posix = each_path.as_posix()
@@ -313,7 +313,7 @@ class DropboxSync:
 
             elif (remote_file.get_dropbox_hash() != expected.get_dropbox_hash() or
                   expected.get_modified_timestamp() < remote_file.get_modified_timestamp()):
-                self.main_logger.warning(f"Skipping conflict: Unexpected remote deletion target file {each_path:s}.")
+                self.main_logger.warning(f"Skipping conflict: Unexpected remote deletion target file {each_path}.")
                 continue
 
             dropbox_path = DropboxSync._dropbox_path_format(remote_path)
@@ -347,7 +347,7 @@ class DropboxSync:
                 local_file = self.local_folder / each_path
                 status = local_file.stat()
                 if status.st_size != expected.get_size() or expected.get_modified_timestamp() < get_mod_time_locally(local_file):
-                    self.main_logger.warning(f"Skipping conflict: Unexpected local deletion target file {each_path:s}.")
+                    self.main_logger.warning(f"Skipping conflict: Unexpected local deletion target file {each_path}.")
                     continue
                 local_file.unlink()
 
@@ -390,12 +390,12 @@ class DropboxSync:
                     index_dst[each_path] = src_file
 
                 elif method == SyncAction.DEL:
-                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: file to delete does not exist.")
+                    self.main_logger.warning(f"Conflict {each_path} {direction}: file to delete does not exist.")
                     continue
 
             elif method == SyncAction.ADD:
                 if dst_file == src_file:
-                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: same file already exists.")
+                    self.main_logger.warning(f"Conflict {each_path} {direction}: same file already exists.")
                     continue
 
                 elif dst_file.get_modified_timestamp() < src_file.get_modified_timestamp():
@@ -403,7 +403,7 @@ class DropboxSync:
                     index_dst[each_path] = src_file
 
                 else:
-                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: source is older than target.")
+                    self.main_logger.warning(f"Conflict {each_path} {direction}: source is older than target.")
                     continue
 
             elif method == SyncAction.DEL:
@@ -412,7 +412,7 @@ class DropboxSync:
                     index_dst.pop(each_path, None)
 
                 else:
-                    self.main_logger.warning(f"Conflict {method:s} {each_path:s} {direction:s}: unexpected target file.")
+                    self.main_logger.warning(f"Conflict {each_path} {direction}: unexpected target file.")
                     continue
 
         if debug:

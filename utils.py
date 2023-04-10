@@ -5,7 +5,6 @@ import enum
 import hashlib
 import pathlib
 from abc import abstractmethod, ABC
-from dataclasses import dataclass
 from typing import Optional, Union
 
 from dropbox import files
@@ -48,7 +47,7 @@ class FileInfo(ABC):
         return hash((self.path.as_posix(), self.get_modified_timestamp(), self.get_size()))
 
     def __repr__(self):
-        return f"FileInfo(path={self.path.as_posix():s}, is_folder={self.is_folder!s:s})"
+        return f"FileInfo(path={self.path}, is_folder={str(self.is_folder):s})"
 
     def __str__(self):
         return self.__repr__()
