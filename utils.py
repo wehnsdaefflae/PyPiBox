@@ -55,7 +55,7 @@ class FileInfo(ABC):
 
 
 class LocalFile(FileInfo):
-    def __init__(self, path: pathlib.Path, is_folder: bool):
+    def __init__(self, path: pathlib.PosixPath, is_folder: bool):
         super().__init__(pathlib.PurePosixPath(path.as_posix()), is_folder)
         self.actual = path
         self.dropbox_hash = None
@@ -104,24 +104,6 @@ REMOTE_FILE_INDEX = dict[pathlib.PurePosixPath, RemoteFile]
 FILE_INDEX = Union[LOCAL_FILE_INDEX, REMOTE_FILE_INDEX]
 
 
-@dataclass
-class Delta(ABC):
-    modified: FILE_INDEX
-    deleted: FILE_INDEX
-
-
-@dataclass
-class LocalDelta(Delta):
-    modified: LOCAL_FILE_INDEX
-    deleted: LOCAL_FILE_INDEX
-
-
-@dataclass
-class RemoteDelta(Delta):
-    modified: REMOTE_FILE_INDEX
-    deleted: REMOTE_FILE_INDEX
-
-
 def compute_dropbox_hash(file_path: pathlib.Path) -> str:
     # https://stackoverflow.com/questions/13008040/locally-calculate-dropbox-hash-of-files
     dropbox_hash_chunk_size = 4 * 1024 * 1024
@@ -149,7 +131,7 @@ def get_size_locally(file_path: pathlib.Path) -> int:
     return stat.st_size
 
 
-def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata], offset: float = 2 * 60 * 60) -> float:
+def get_mod_time_remotely(entry: Union[files.FileMetadata, files.FolderMetadata]) -> float:
     stat = entry.client_modified
     return stat.timestamp()
 

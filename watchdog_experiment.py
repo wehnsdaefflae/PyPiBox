@@ -36,6 +36,7 @@ def main(directory_to_monitor):
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
+
     observer.join()
 
 
