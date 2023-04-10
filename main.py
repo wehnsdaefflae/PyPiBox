@@ -355,9 +355,6 @@ class DropboxSync:
         folders.sort(key=lambda x: depth(x[0]), reverse=True)
         for each_path, expected in folders:
             each_local_folder = self.local_folder / each_path
-            if expected.get_modified_timestamp() < get_mod_time_locally(each_local_folder):
-                self.main_logger.warning(f"Skipping conflict: Unexpected local deletion target folder {each_path:s}.")
-                continue
             each_local_folder.rmdir()
 
     def _sync_action(self, source_changes: FILE_INDEX, method: SyncAction, direction: SyncDirection, debug: bool):
