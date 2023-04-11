@@ -22,10 +22,10 @@ from utils import SyncDirection, SyncAction
 class DropboxSync:
     @staticmethod
     def _logging_handlers() -> set[logging.StreamHandler]:
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
         handler_stdout = logging.StreamHandler(sys.stdout)
-        handler_stdout.setLevel(logging.DEBUG)
+        handler_stdout.setLevel(logging.INFO)
         handler_stdout.setFormatter(formatter)
 
         handler_file = logging.FileHandler("events.log")
@@ -154,7 +154,8 @@ class DropboxSync:
             if file_size < chunk_size:
                 self.main_logger.info(f"Uploading {file_info}...")
                 db_target = DropboxSync._dropbox_path_format(target_path)
-                self.client.files_upload(file.read(), db_target, mode=db_files.WriteMode("overwrite"))
+                entry = self.client.files_upload(file.read(), db_target, mode=db_files.WriteMode("overwrite"))
+                pass
                 # https://github.com/dropbox/dropbox-sdk-python/blob/master/example/updown.py
 
             else:
@@ -189,7 +190,10 @@ class DropboxSync:
     def _create_folders_remotely(self, folders: list[tuple[pathlib.PurePosixPath, LocalFile]]) -> None:
         self.main_logger.info(f"Creating {len(folders):d} folders...")
 
-        for relative_path, _ in folders:
+        for i, (relative_path, _) in enumerate(folders):
+            if (i + 1) % 100 == 0:
+                self.main_logger.info(f"Created {i + 1:d} / {len(folders)} folders...")
+
             absolute_path = self.dropbox_folder / relative_path
             remote_file = self._get_remote_file(absolute_path)
 
@@ -202,7 +206,10 @@ class DropboxSync:
     def _upload_files(self, files: list[tuple[pathlib.PurePosixPath, LocalFile]]) -> None:
         self.main_logger.info(f"Uploading {len(files):d} files...")
 
-        for relative_path, expected in files:
+        for i, (relative_path, expected) in enumerate(files):
+            if (i + 1) % 100 == 0:
+                self.main_logger.info(f"Uploaded {i + 1:d} / {len(files)} files...")
+
             dst_path = self.dropbox_folder / relative_path
             remote_file = self._get_remote_file(dst_path)
 
@@ -220,14 +227,20 @@ class DropboxSync:
         len_paths = len(remote_index)
         if len(remote_index) < 1:
             return
-        self.main_logger.info(f"Downloading {len_paths:d} files")
+
+        self.main_logger.info(f"Downloading {len_paths:d} remote entries...")
 
         absolute_dir_paths = set(self.local_folder / each_path for each_path, each_file in remote_index.items() if each_file.is_folder)
-        for absolute_path in absolute_dir_paths:
+        for i, absolute_path in enumerate(absolute_dir_paths):
+            if (i + 1) % 100 == 0:
+                self.main_logger.info(f"Created {i:d} / {len(absolute_dir_paths):d} local folders...")
             absolute_path.mkdir(exist_ok=True, parents=True)
 
         files = [(each_path, each_file) for each_path, each_file in remote_index.items() if not each_file.is_folder]
-        for relative_path, expected in files:
+        for i, (relative_path, expected) in enumerate(files):
+            if (i + 1) % 100 == 0:
+                self.main_logger.info(f"Downloaded {i:d} / {len_paths:d} remote files...")
+
             absolute_path = self.local_folder / relative_path
             if absolute_path.is_file():
                 local_file = LocalFile(absolute_path, self.local_folder)
@@ -239,14 +252,12 @@ class DropboxSync:
             db_local_path = DropboxSync._dropbox_path_format(absolute_path)
             self.client.files_download_to_file(db_local_path, db_remote_path)
 
-            os.utime(db_local_path, (time.time(), expected.get_modified_timestamp()))
-
     def _get_remote_file(self, absolute_path: pathlib.PurePath) -> Optional[RemoteFile]:
         db_path = DropboxSync._dropbox_path_format(absolute_path)
         try:
             entry = self.client.files_get_metadata(db_path)
 
-        except db_exceptions.ApiError as e:
+        except db_exceptions.ApiError as _e:
             # self.main_logger.warning(f"Could not get metadata for {absolute_path}: {str(e):s}")
             return None
 
@@ -259,7 +270,7 @@ class DropboxSync:
         len_paths = len(local_index)
         if len_paths < 1:
             return
-        self.main_logger.warning(f"Deleting {len_paths:d} remote files")
+        self.main_logger.warning(f"Deleting {len_paths:d} remote entries...")
 
         files = [(each_path, each_file) for each_path, each_file in local_index.items() if not each_file.is_folder]
         file_entries = self._get_files_to_delete_remotely(files)
@@ -325,9 +336,10 @@ class DropboxSync:
     def _delete_batch(self, file_entries: list[DeleteArg]) -> None:
         len_files = len(file_entries)
         ids = set()
-        for i in range(0, len_files, 1000):
-            sub_list = file_entries[i:i + 1000]
-            self.main_logger.warning(f"Deleting {len(sub_list):d} remote files...")
+        max_batch_size = 1000
+        for i in range(0, len_files, max_batch_size):
+            sub_list = file_entries[i:i + max_batch_size]
+            self.main_logger.warning(f"Creating remote deletion batch ({i:d} - {i + max_batch_size:d})...")
             async_job_launch: dropbox.files.DeleteBatchLaunch = self.client.files_delete_batch(sub_list)
             async_job_id = async_job_launch.get_async_job_id()
             ids.add(async_job_id)
@@ -339,10 +351,13 @@ class DropboxSync:
                 if not status.is_complete():
                     incomplete_statuses.append(status)
 
-            if len(incomplete_statuses) == 0:
+            no_incomplete = len(incomplete_statuses)
+            if no_incomplete < 1:
+                self.main_logger.warning("Remote batch deletion finished.")
                 break
 
-            self.main_logger.warning("Waiting for deletion to finish...")
+            no_total = len(ids)
+            self.main_logger.warning(f"Deleted {no_total-no_incomplete:d} / {no_total:d} remote batches. Waiting for rest...")
             time.sleep(1)
 
         # while 0 < len([status for each_id in ids if not (status := self.client.files_delete_batch_check(each_id)).is_complete()]):
@@ -353,9 +368,13 @@ class DropboxSync:
         len_paths = len(remote_index)
         if len_paths < 1:
             return
-        self.main_logger.warning(f"Deleting {len_paths:d} local files")
 
-        for relative_path, expected in remote_index.items():
+        self.main_logger.warning(f"Deleting {len_paths:d} local entries...")
+
+        for i, (relative_path, expected) in enumerate(remote_index.items()):
+            if (i + 1) % 100 == 0:
+                self.main_logger.warning(f"Deleted {i:d}/{len_paths:d} local files...")
+
             if not expected.is_folder:
                 absolute_path = self.local_folder / relative_path
                 status = absolute_path.stat()
@@ -366,7 +385,9 @@ class DropboxSync:
 
         folders = [(each_path, each_file) for each_path, each_file in remote_index.items() if each_file.is_folder]
         folders.sort(key=lambda x: depth(x[0]), reverse=True)
-        for relative_path, expected in folders:
+        for i, (relative_path, expected) in enumerate(folders):
+            if (i + 1) % 100 == 0:
+                self.main_logger.warning(f"Deleted {i:d}/{len_paths:d} local folders...")
             absolute_path = self.local_folder / relative_path
             absolute_path.rmdir()
 
@@ -407,14 +428,17 @@ class DropboxSync:
                     continue
 
             elif method == SyncAction.ADD:
-                if (dst_file.get_modified_timestamp() < src_file.get_modified_timestamp() and
+                if src_file.is_folder:
+                    continue
+
+                elif (dst_file.get_modified_timestamp() < src_file.get_modified_timestamp() and
                         (dst_file.get_size() != src_file.get_size() or dst_file.get_dropbox_hash() != src_file.get_dropbox_hash())):
 
                     action_cache[each_path] = src_file
                     index_dst[each_path] = src_file
 
                 else:
-                    self.main_logger.warning(f"Skipped conflict {each_path} {direction}: source is not younger than target or files are identical.")
+                    self.main_logger.debug(f"Skipped conflict {each_path} {direction}: source is not younger than target or files are identical.")
                     continue
 
             elif method == SyncAction.DEL:
@@ -465,6 +489,7 @@ class DropboxSync:
             last_state = previous_index.get(each_path)
             if last_state is None or last_state.get_modified_timestamp() < each_file.get_modified_timestamp():
                 remotely_modified[each_path] = each_file
+
         return remotely_modified
 
 
